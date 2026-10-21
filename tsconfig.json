@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@agentdesk/protocol": ["packages/protocol/src/index.ts"],
+      "@agentdesk/runtime": ["packages/runtime/src/index.ts"],
+      "@agentdesk/tools": ["packages/tools/src/index.ts"],
+      "@agentdesk/eval": ["packages/eval/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "apps/cli/src/**/*.ts",
+    "vitest.config.ts"
+  ]
+}

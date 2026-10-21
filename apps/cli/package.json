@@ -1,0 +1,15 @@
+{
+  "name": "@agentdesk/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agentdesk": "./src/index.ts"
+  },
+  "dependencies": {
+    "@agentdesk/eval": "workspace:*",
+    "@agentdesk/protocol": "workspace:*",
+    "@agentdesk/runtime": "workspace:*",
+    "@agentdesk/tools": "workspace:*"
+  }
+}

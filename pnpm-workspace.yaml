@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+
+allowBuilds:
+  esbuild: true
+
+# Don't re-verify node_modules before every `pnpm <script>`; it turns a
+# harmless warning into a failed command.
+verifyDepsBeforeRun: false

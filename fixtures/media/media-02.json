@@ -1,0 +1,25 @@
+{
+  "id": "media-02",
+  "title": "槽位缺失：用场景标签检索，而不是瞎猜歌名",
+  "inputs": ["来点适合堵车的歌"],
+  "script": [
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c1", "name": "search_media", "args": { "mood": "commute" } }]
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c2", "name": "play", "args": { "trackId": "t-006" } }]
+    },
+    {
+      "text": "堵车听点 lo-fi 比较放松，已为你播放。",
+      "toolCalls": []
+    }
+  ],
+  "expect": {
+    "mustCall": [
+      { "name": "search_media", "args": { "mood": "commute" } },
+      { "name": "play", "args": { "trackId": "t-006" } }
+    ]
+  }
+}

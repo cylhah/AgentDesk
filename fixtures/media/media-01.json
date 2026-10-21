@@ -1,0 +1,25 @@
+{
+  "id": "media-01",
+  "title": "单轮明确意图：放周杰伦的晴天",
+  "inputs": ["放周杰伦的晴天"],
+  "script": [
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c1", "name": "search_media", "args": { "query": "晴天", "artist": "周杰伦" } }]
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c2", "name": "play", "args": { "trackId": "t-001" } }]
+    },
+    {
+      "text": "正在为你播放周杰伦的《晴天》。",
+      "toolCalls": []
+    }
+  ],
+  "expect": {
+    "mustCall": [
+      { "name": "search_media", "args": { "query": "晴天", "artist": "周杰伦" } },
+      { "name": "play", "args": { "trackId": "t-001" } }
+    ]
+  }
+}

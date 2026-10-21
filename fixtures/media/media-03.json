@@ -1,0 +1,34 @@
+{
+  "id": "media-03",
+  "title": "多轮指代：放首歌 → 换一首（复用当前播放态）",
+  "inputs": ["放首歌", "换一首"],
+  "script": [
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c1", "name": "search_media", "args": { "mood": "commute" } }]
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c2", "name": "play", "args": { "trackId": "t-006" } }]
+    },
+    {
+      "text": "先来点 lo-fi。",
+      "toolCalls": []
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c3", "name": "next", "args": {} }]
+    },
+    {
+      "text": "换了一首。",
+      "toolCalls": []
+    }
+  ],
+  "expect": {
+    "mustCall": [
+      { "name": "search_media" },
+      { "name": "play" },
+      { "name": "next" }
+    ]
+  }
+}

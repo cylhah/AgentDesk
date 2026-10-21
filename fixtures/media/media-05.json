@@ -1,0 +1,15 @@
+{
+  "id": "media-05",
+  "title": "拒识兜底：订机票不属于媒体域，不得调用任何媒体工具",
+  "inputs": ["帮我订机票"],
+  "script": [
+    {
+      "text": "我目前只能控制媒体和车控，订机票还做不到。",
+      "toolCalls": []
+    }
+  ],
+  "expect": {
+    "mustCall": [],
+    "mustNotCall": ["search_media", "play", "set_window"]
+  }
+}
