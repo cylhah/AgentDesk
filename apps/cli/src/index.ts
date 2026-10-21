@@ -1,17 +1,25 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { newId, type AgentEvent, type Message } from "@agentdesk/protocol";
+import {
+  AgentEventSchema,
+  newId,
+  type AgentEvent,
+  type Message,
+} from "@agentdesk/protocol";
 import { formatTable, runCase, type EvalCase } from "@agentdesk/eval";
 import {
   openAIProviderFromEnv,
   runTurn,
   ScriptedProvider,
   type ApprovalRequest,
+  type RunTurnResult,
 } from "@agentdesk/runtime";
+import { JsonlSessionStore } from "@agentdesk/store";
 import { createAllTools, mediaSystemPrompt } from "@agentdesk/tools";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
+const store = new JsonlSessionStore(resolve(process.cwd(), "runs/sessions"));
 const useColor = process.stdout.isTTY === true;
 
 const paint = (code: string, text: string): string =>
@@ -71,6 +79,14 @@ function printEvent(event: AgentEvent): void {
         `  ${red("⏸ approval required")} ${event.name} ${dim(JSON.stringify(event.args))}`,
       );
       break;
+    case "context.compacted":
+      console.log(
+        dim(
+          `  ⇣ context ${event.tokensBefore} → ${event.tokensAfter} tokens` +
+            ` (truncated ${event.truncatedToolResults}, elided ${event.elidedToolResults}, dropped ${event.droppedMessages})`,
+        ),
+      );
+      break;
     case "error":
       console.log(`  ${red("! error")} ${event.message}`);
       break;
@@ -100,6 +116,154 @@ function makeApproval(autoApprove: boolean) {
     );
     return /^y(es)?$/i.test(answer.trim());
   };
+}
+
+/** Conversation state a host keeps across turns. */
+interface Host {
+  readonly threadId: string;
+  messages: Message[];
+  readonly system: string;
+  readonly tracePath: string;
+}
+
+async function openHost(resumeId: string | undefined, providerId: string): Promise<Host> {
+  if (resumeId !== undefined) {
+    const loaded = await store.load(resumeId);
+    return {
+      threadId: resumeId,
+      messages: [...loaded.messages],
+      // Replay the policy the session was recorded with, not today's default.
+      system: loaded.header.system ?? mediaSystemPrompt,
+      tracePath: join(store.root, `${resumeId}.events.ndjson`),
+    };
+  }
+
+  const threadId = newId("thread");
+  await store.create({
+    threadId,
+    cwd: process.cwd(),
+    provider: providerId,
+    system: mediaSystemPrompt,
+  });
+  return {
+    threadId,
+    messages: [],
+    system: mediaSystemPrompt,
+    tracePath: join(store.root, `${threadId}.events.ndjson`),
+  };
+}
+
+interface TurnOptions {
+  readonly autoApprove: boolean;
+  readonly maxSteps?: number;
+}
+
+/**
+ * Runs one turn and durably records it *before* the next turn starts:
+ * the event trace first (what happened), then the messages (what it meant).
+ * A crash mid-write loses at most the last line, never the whole session.
+ */
+async function runOneTurn(host: Host, task: string, options: TurnOptions): Promise<RunTurnResult> {
+  const provider = openAIProviderFromEnv();
+  const turnId = newId("turn");
+  const userMessage: Message = { role: "user", content: task };
+  const before = host.messages.length;
+
+  await store.appendMessage(host.threadId, turnId, userMessage);
+  host.messages = [...host.messages, userMessage];
+
+  const trace: AgentEvent[] = [];
+  const result = await runTurn({
+    threadId: host.threadId,
+    turnId,
+    messages: host.messages,
+    provider,
+    tools: createAllTools(),
+    system: host.system,
+    cwd: process.cwd(),
+    approval: makeApproval(options.autoApprove),
+    ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+    onEvent: (event) => {
+      printEvent(event);
+      trace.push(event);
+    },
+  });
+
+  host.messages = [...result.messages];
+  for (const message of result.messages.slice(before + 1)) {
+    await store.appendMessage(host.threadId, turnId, message);
+  }
+  await store.appendTurn(host.threadId, {
+    turnId,
+    reason: result.reason,
+    usage: result.usage,
+  });
+
+  if (trace.length > 0) {
+    await mkdir(dirname(host.tracePath), { recursive: true });
+    await appendFile(
+      host.tracePath,
+      `${trace.map((event) => JSON.stringify(event)).join("\n")}\n`,
+      "utf8",
+    );
+  }
+
+  return result;
+}
+
+function reportSession(host: Host): void {
+  console.log(dim(`\n  session ${host.threadId}`));
+  console.log(dim(`  conversation ${join(store.root, `${host.threadId}.jsonl`)}`));
+  console.log(dim(`  events      ${host.tracePath}`));
+  console.log(
+    dim(`  continue    pnpm dev run "<task>" --resume ${host.threadId}`) +
+      dim(`   (or: pnpm dev chat --resume ${host.threadId})`),
+  );
+}
+
+async function runLive(task: string, options: TurnOptions, resumeId?: string): Promise<void> {
+  const provider = openAIProviderFromEnv();
+  console.log(dim(`provider ${provider.id}`));
+  const host = await openHost(resumeId, provider.id);
+  const result = await runOneTurn(host, task, options);
+
+  if (result.reason === "awaiting_approval") {
+    console.log(
+      yellow(
+        `\nstopped for approval: ${result.pendingApproval?.tool.name ?? "?"} — re-run with --yes to allow`,
+      ),
+    );
+  }
+  reportSession(host);
+}
+
+async function runChat(options: TurnOptions, resumeId?: string): Promise<void> {
+  const provider = openAIProviderFromEnv();
+  console.log(dim(`provider ${provider.id}`));
+  const host = await openHost(resumeId, provider.id);
+  if (host.messages.length > 0) {
+    console.log(dim(`resumed ${host.messages.length} messages from ${host.threadId}`));
+  }
+  console.log(dim("/exit to stop · /session to show paths"));
+
+  for (;;) {
+    let line: string;
+    try {
+      line = (await ask(`\n${green("you")} `)).trim();
+    } catch {
+      break; // Ctrl+D / closed stdin
+    }
+    if (line === "/exit" || line === "/quit") break;
+    if (line === "/session") {
+      reportSession(host);
+      continue;
+    }
+    if (line.length === 0) continue;
+
+    await runOneTurn(host, line, options);
+  }
+
+  reportSession(host);
 }
 
 async function runDemo(caseId: string | undefined): Promise<void> {
@@ -132,36 +296,6 @@ async function runDemo(caseId: string | undefined): Promise<void> {
   }
 }
 
-interface RunOptions {
-  readonly autoApprove: boolean;
-  readonly maxSteps?: number;
-}
-
-async function runLive(task: string, options: RunOptions): Promise<void> {
-  const provider = openAIProviderFromEnv();
-  console.log(dim(`provider ${provider.id}`));
-
-  const result = await runTurn({
-    threadId: newId("thread"),
-    messages: [{ role: "user", content: task }],
-    provider,
-    tools: createAllTools(),
-    system: mediaSystemPrompt,
-    cwd: process.cwd(),
-    approval: makeApproval(options.autoApprove),
-    ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
-    onEvent: printEvent,
-  });
-
-  if (result.reason === "awaiting_approval") {
-    console.log(
-      yellow(
-        `\nstopped for approval: ${result.pendingApproval?.tool.name ?? "?"} — re-run with --yes to allow`,
-      ),
-    );
-  }
-}
-
 async function runEval(live: boolean): Promise<void> {
   const cases = await loadCases();
   const tools = createAllTools();
@@ -185,27 +319,160 @@ async function runEval(live: boolean): Promise<void> {
   if (results.some((result) => !result.ok)) process.exitCode = 1;
 }
 
+async function listSessions(): Promise<void> {
+  const sessions = await store.list();
+  if (sessions.length === 0) {
+    console.log(dim(`no sessions yet — run: pnpm dev run "放周杰伦的晴天"`));
+    return;
+  }
+
+  const rows = sessions.map((session) => [
+    session.threadId,
+    new Date(session.updatedAt).toISOString().slice(0, 16).replace("T", " "),
+    String(session.turns),
+    String(session.messages),
+    session.firstUserText.length > 40
+      ? `${session.firstUserText.slice(0, 40)}…`
+      : session.firstUserText,
+  ]);
+  const header = ["thread", "updated", "turns", "msgs", "first user message"];
+  const widths = header.map((cell, index) =>
+    Math.max(cell.length, ...rows.map((row) => (row[index] ?? "").length)),
+  );
+  const line = (cells: readonly string[]): string =>
+    cells.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ");
+
+  console.log(line(header));
+  console.log(widths.map((width) => "-".repeat(width)).join("  "));
+  for (const row of rows) console.log(line(row));
+  console.log(dim(`\nresume one with: pnpm dev chat --resume <thread>`));
+}
+
+async function replay(file: string | undefined): Promise<void> {
+  if (file === undefined) {
+    console.error(red("usage: replay <file.events.ndjson>"));
+    process.exitCode = 1;
+    return;
+  }
+
+  let raw: string;
+  try {
+    raw = await readFile(resolve(process.cwd(), file), "utf8");
+  } catch {
+    console.error(red(`cannot read ${file}`));
+    process.exitCode = 1;
+    return;
+  }
+
+  let total = 0;
+  let invalid = 0;
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      invalid += 1;
+      continue;
+    }
+    const event = AgentEventSchema.safeParse(parsed);
+    if (!event.success) {
+      invalid += 1;
+      continue;
+    }
+    total += 1;
+    printEvent(event.data);
+  }
+
+  console.log(
+    dim(`\nreplayed ${total} events${invalid > 0 ? `, skipped ${invalid} invalid lines` : ""}`),
+  );
+  if (total === 0) process.exitCode = 1;
+}
+
 function usage(): void {
   console.log(
     [
       "agentdesk — local agent runtime",
       "",
       "Usage:",
-      "  pnpm dev run --mock [caseId]        replay a fixture through the real loop",
-      '  pnpm dev run "<task>" [--yes]       run against the live model',
-      "  pnpm dev eval [--live]              score fixtures (scripted or live)",
+      '  run "<task>" [--yes] [--resume <thread>]   one turn against the live model',
+      "  chat [--yes] [--resume <thread>]           interactive; every turn is recorded",
+      "  demo [caseId]                              replay a fixture through the real loop",
+      "  eval [--live]                              score fixtures (scripted or live)",
+      "  sessions                                   list recorded sessions",
+      "  replay <file.events.ndjson>                re-print a recorded event stream",
+      "",
+      "Every live turn writes runs/sessions/<thread>.jsonl (messages) and",
+      "runs/sessions/<thread>.events.ndjson (events). Session files are gitignored.",
       "",
       "Env: OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL (any OpenAI-compatible endpoint).",
     ].join("\n"),
   );
 }
 
+interface ParsedArgs {
+  readonly flags: readonly string[];
+  readonly positional: readonly string[];
+  readonly resume?: string;
+  readonly maxSteps?: number;
+}
+
+/**
+ * Hand-rolled parsing because the CLI has exactly two value-taking flags.
+ * `--resume <id>` must consume its value, otherwise the id would be joined into
+ * the task string (`run "放晴天" --resume thread_x` → task "放晴天 thread_x").
+ */
+function parseArgs(args: readonly string[]): ParsedArgs {
+  const flags: string[] = [];
+  const positional: string[] = [];
+  let resume: string | undefined;
+  let maxSteps: number | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--resume") {
+      resume = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--resume=")) {
+      resume = arg.slice("--resume=".length);
+      continue;
+    }
+    if (arg === "--max-steps") {
+      maxSteps = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--max-steps=")) {
+      maxSteps = Number(arg.slice("--max-steps=".length));
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      flags.push(arg);
+      continue;
+    }
+    positional.push(arg);
+  }
+
+  return {
+    flags,
+    positional,
+    ...(resume !== undefined ? { resume } : {}),
+    ...(maxSteps !== undefined && Number.isFinite(maxSteps) ? { maxSteps } : {}),
+  };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0] ?? "help";
-  const rest = argv.slice(1);
-  const flags = rest.filter((arg) => arg.startsWith("--"));
-  const positional = rest.filter((arg) => !arg.startsWith("--"));
+  const parsed = parseArgs(argv.slice(1));
+  const { flags, positional, resume: resumeId } = parsed;
+  const options: TurnOptions = {
+    autoApprove: flags.includes("--yes"),
+    ...(parsed.maxSteps !== undefined ? { maxSteps: parsed.maxSteps } : {}),
+  };
 
   if (command === "run") {
     if (flags.includes("--mock")) {
@@ -214,22 +481,36 @@ async function main(): Promise<void> {
     }
     const task = positional.join(" ").trim();
     if (task.length === 0) {
-      console.error(red("usage: run \"<task>\" — the task is the prompt"));
+      console.error(red('usage: run "<task>" — the task is the prompt'));
       process.exitCode = 1;
       return;
     }
-    const maxStepsFlag = rest.find((arg) => arg.startsWith("--max-steps="));
-    await runLive(task, {
-      autoApprove: flags.includes("--yes"),
-      ...(maxStepsFlag !== undefined
-        ? { maxSteps: Number(maxStepsFlag.split("=")[1]) }
-        : {}),
-    });
+    await runLive(task, options, resumeId);
+    return;
+  }
+
+  if (command === "chat") {
+    await runChat(options, resumeId);
     return;
   }
 
   if (command === "eval") {
     await runEval(flags.includes("--live"));
+    return;
+  }
+
+  if (command === "sessions") {
+    await listSessions();
+    return;
+  }
+
+  if (command === "replay") {
+    await replay(positional[0]);
+    return;
+  }
+
+  if (command === "demo") {
+    await runDemo(positional[0]);
     return;
   }
 

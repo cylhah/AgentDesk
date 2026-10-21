@@ -9,6 +9,7 @@ import {
   type TurnEndReason,
 } from "@agentdesk/protocol";
 import type { ModelProvider } from "./provider";
+import { compactMessages, type CompactionOptions } from "./context";
 
 export interface ApprovalRequest {
   readonly tool: ToolDef;
@@ -30,6 +31,8 @@ export interface RunTurnInput {
   readonly system?: string;
   readonly maxSteps?: number;
   readonly tokenBudget?: number;
+  /** Per-request context window handling. The full history is still kept in memory/on disk. */
+  readonly context?: CompactionOptions;
   readonly approval?: ApprovalFn;
   readonly onEvent?: (event: AgentEvent) => void;
   readonly cwd?: string;
@@ -89,8 +92,22 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       break;
     }
 
+    const compacted = compactMessages(messages, input.context ?? {});
+    if (compacted.report.changed) {
+      emit({
+        type: "context.compacted",
+        turnId,
+        ts: now(),
+        tokensBefore: compacted.report.tokensBefore,
+        tokensAfter: compacted.report.tokensAfter,
+        truncatedToolResults: compacted.report.truncatedToolResults,
+        elidedToolResults: compacted.report.elidedToolResults,
+        droppedMessages: compacted.report.droppedMessages,
+      });
+    }
+
     const turn = await input.provider.complete({
-      messages,
+      messages: compacted.messages,
       tools: input.tools.map(toToolSpec),
       ...(input.system !== undefined ? { system: input.system } : {}),
     });
@@ -177,16 +194,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       }
 
       if (tool.risk === "confirm") {
-        const approved =
-          input.approval !== undefined
-            ? await input.approval({
-                tool,
-                args: parsed.data,
-                callId: call.id,
-              })
-            : false;
-
-        if (!approved) {
+        // No callback at all means "nobody to ask yet" — a UI that will ask
+        // later resumes the turn. A callback that returns false is a *decision*
+        // (denied), which the model must see and react to like any other error.
+        if (input.approval === undefined) {
           emit({
             type: "tool.approval_required",
             turnId,
@@ -199,6 +210,28 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
           pendingApproval = { tool, args: parsed.data, callId: call.id };
           reason = "awaiting_approval";
           break outer;
+        }
+
+        const approved = await input.approval({
+          tool,
+          args: parsed.data,
+          callId: call.id,
+        });
+
+        if (!approved) {
+          emit({
+            type: "error",
+            turnId,
+            message: `denied by user: ${tool.name}`,
+            recoverable: true,
+            ts: now(),
+          });
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            content: `ERROR user denied ${tool.name} — do not retry, explain what you cannot do`,
+          });
+          continue;
         }
       }
 

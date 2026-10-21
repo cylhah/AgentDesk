@@ -10,6 +10,7 @@
     "@agentdesk/eval": "workspace:*",
     "@agentdesk/protocol": "workspace:*",
     "@agentdesk/runtime": "workspace:*",
+    "@agentdesk/store": "workspace:*",
     "@agentdesk/tools": "workspace:*"
   }
 }

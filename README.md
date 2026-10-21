@@ -18,15 +18,19 @@ pnpm install
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 28 个单元测试
+pnpm test                                  # 42 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.deepseek.com/v1   # 可选
 export OPENAI_MODEL=deepseek-chat                    # 可选
-pnpm dev run "放周杰伦的晴天"
-pnpm dev eval --live                                 # 用真实模型跑夹具，会花钱
+
+pnpm dev run "放周杰伦的晴天"                # 单轮；结束会打印 session id
+pnpm dev chat                              # 多轮；每轮自动落盘
+pnpm dev sessions                          # 列出已记录的会话
+pnpm dev replay runs/sessions/<id>.events.ndjson    # 回放事件流
+pnpm dev eval --live                       # 用真实模型跑夹具，会花钱
 ```
 
 预期输出（demo，节选）：
@@ -53,10 +57,12 @@ apps/
   cli/       当前唯一宿主：跑 demo / eval（Week 5 起补 desktop / web / gateway）
 packages/
   protocol/  事件、消息、工具契约（zod）
-  runtime/   agent loop、provider 抽象、审批闸门
+  runtime/   agent loop、provider 抽象、审批闸门、上下文压缩
+  store/     会话落盘（JSONL），Week 3 换 SQLite 只换实现
   tools/     fs_* / shell_run + 媒体域 mock + 场景策略（mediaSystemPrompt）
   eval/      夹具执行器 + 指标表
 fixtures/    评测用例（JSON）
+runs/        会话与事件流（gitignored，跑一次生成一次）
 docs/        ADR、harness 拆解问题清单、路线图
 ```
 
@@ -88,14 +94,29 @@ docs/        ADR、harness 拆解问题清单、路线图
 | media-04 | PASS | 0 | 3 | — （`awaiting_approval`，工具未执行） |
 | media-05 | PASS | 0 | 10 | — （域外请求，不调工具） |
 
-**5/5**。但注意这个数字的口径：它测的是「策略 + 工具 + loop + 模型」的组合，不是模型单体。同一个模型在没有 [mediaSystemPrompt](./packages/tools/src/media.policy.ts) 时是 3/5——会列歌单而不播放，会自己在文本里问「要打开车窗吗」而不是调工具。
+**5/5，连跑 3 次稳定**。但注意这个数字的口径：它测的是「策略 + 工具 + loop + 模型」的组合，不是模型单体。同一个模型在没有 [mediaSystemPrompt](./packages/tools/src/media.policy.ts) 时是 3/5——会列歌单而不播放，会自己在文本里问「要打开车窗吗」而不是调工具。
 
-## 待办（Week 2）
+## 会话与回放
 
-- [ ] 会话 JSONL 落盘 + `resume`
-- [ ] 工具结果压缩 + 上下文预算初版
-- [ ] 事件 NDJSON 输出，可回放
-- [ ] 流式输出（现在是非流式，UI 阶段再补）
+每次真实模型调用会写两个文件（`runs/` 已 gitignore）：
+
+```
+runs/sessions/<thread>.jsonl          落盘会话：header + 每条消息 + 每轮 usage
+runs/sessions/<thread>.events.ndjson  事件流：AgentEvent 逐条，可 replay
+```
+
+- **header 里存了当时的 system prompt**。策略改了以后续跑老会话，仍然用当时那份策略——否则就是换了个实验条件去比分数。
+- **`--resume <thread>`** 接着上一轮跑；`chat` 里连续多轮共享同一个 thread。
+- **崩溃安全**：NDJSON 逐行追加，坏行跳过并计数，不会因为最后一行写坏丢掉整个会话。
+- **上下文预算**：每次请求前做三级压缩——旧工具结果截断 → 旧的置为 `[elided]` → 整轮丢弃（保证 tool call 与 result 同生共死）。**历史本身不删**，磁盘上永远完整，只有发给模型的请求窗口会缩小。
+
+## 待办（Week 3）
+
+- [ ] `Thread/Turn/Item` 落 SQLite（`store` 接口已留好，换实现即可）
+- [ ] 压缩从"确定性裁剪"升级为"摘要 + 裁剪"混合
+- [ ] 压缩前后对比数据（成功率、token、延迟）
+- [ ] 审批恢复：`awaiting_approval` 之后能继续，而不是让宿主重跑
+- [ ] 流式输出（UI 阶段再补）
 
 ## 设计文档
 

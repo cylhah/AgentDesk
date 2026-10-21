@@ -32,6 +32,9 @@ importers:
       '@agentdesk/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@agentdesk/store':
+        specifier: workspace:*
+        version: link:../../packages/store
       '@agentdesk/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -55,6 +58,12 @@ importers:
         version: 3.25.76
 
   packages/runtime:
+    dependencies:
+      '@agentdesk/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
+  packages/store:
     dependencies:
       '@agentdesk/protocol':
         specifier: workspace:*

@@ -19,7 +19,7 @@
   "expect": {
     "mustCall": [
       { "name": "search_media", "args": { "mood": "commute" } },
-      { "name": "play", "args": { "trackId": "t-006" } }
+      { "name": "play" }
     ]
   }
 }

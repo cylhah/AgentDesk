@@ -83,6 +83,57 @@ describe("runTurn", () => {
     expect(events.some((event) => event.type === "tool.call")).toBe(false);
   });
 
+  it("treats an explicit denial as a tool error, not as a halt", async () => {
+    const provider = new ScriptedProvider([
+      { text: "", toolCalls: [{ id: "c1", name: "set_window", args: { action: "open" } }] },
+      { text: "抱歉，我没有权限打开车窗。", toolCalls: [] },
+    ]);
+
+    const events: AgentEvent[] = [];
+    const result = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("开车窗"),
+      provider,
+      tools,
+      approval: () => false,
+      onEvent: (event) => events.push(event),
+    });
+
+    // A host that answers "no" is different from a host that cannot ask yet.
+    expect(result.reason).toBe("completed");
+    expect(result.pendingApproval).toBeUndefined();
+    expect(events.some((event) => event.type === "tool.call")).toBe(false);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+    expect(
+      result.messages.some(
+        (message) => message.role === "tool" && message.content.includes("denied"),
+      ),
+    ).toBe(true);
+  });
+
+  it("compacts the request while keeping the full recorded history", async () => {
+    const bigResult = "x".repeat(20_000);
+    const provider = new ScriptedProvider([{ text: "好的。", toolCalls: [] }]);
+
+    const events: AgentEvent[] = [];
+    const result = await runTurn({
+      threadId: "thread_1",
+      messages: [
+        { role: "user", content: "读一下文件" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", args: { path: "a" } }] },
+        { role: "tool", toolCallId: "c1", content: bigResult },
+      ],
+      provider,
+      tools,
+      context: { maxContextTokens: 200, toolResultMaxChars: 100, keepRecentToolResults: 0 },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events.some((event) => event.type === "context.compacted")).toBe(true);
+    // history is untouched: only the request was shrunk
+    expect(result.messages.some((message) => message.content === bigResult)).toBe(true);
+  });
+
   it("stops at maxSteps when the model never stops calling tools", async () => {
     const provider: ModelProvider = {
       id: "always-calls",

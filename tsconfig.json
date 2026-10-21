@@ -6,7 +6,8 @@
       "@agentdesk/protocol": ["packages/protocol/src/index.ts"],
       "@agentdesk/runtime": ["packages/runtime/src/index.ts"],
       "@agentdesk/tools": ["packages/tools/src/index.ts"],
-      "@agentdesk/eval": ["packages/eval/src/index.ts"]
+      "@agentdesk/eval": ["packages/eval/src/index.ts"],
+      "@agentdesk/store": ["packages/store/src/index.ts"]
     }
   },
   "include": [

@@ -11,6 +11,7 @@ export default defineConfig({
       "@agentdesk/runtime": resolveFromRoot("./packages/runtime/src/index.ts"),
       "@agentdesk/tools": resolveFromRoot("./packages/tools/src/index.ts"),
       "@agentdesk/eval": resolveFromRoot("./packages/eval/src/index.ts"),
+      "@agentdesk/store": resolveFromRoot("./packages/store/src/index.ts"),
     },
   },
   test: {
