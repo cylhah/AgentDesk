@@ -83,5 +83,6 @@ docs/        ADR、harness 拆解问题清单、路线图
 
 ## 设计文档
 
+- [项目上下文（新人/新会话先读这个）](./docs/CONTEXT.md)
 - [ADR-001 架构与分层](./docs/adr-001-architecture.md)
 - [读 harness 时要回答的 6 个问题](./docs/harness-questions.md)
