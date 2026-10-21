@@ -1,9 +1,15 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { AgentEvent, Message } from "@agentdesk/protocol";
+import { createInterface } from "node:readline/promises";
+import { newId, type AgentEvent, type Message } from "@agentdesk/protocol";
 import { formatTable, runCase, type EvalCase } from "@agentdesk/eval";
-import { runTurn, ScriptedProvider } from "@agentdesk/runtime";
-import { createMockMediaTools } from "@agentdesk/tools";
+import {
+  openAIProviderFromEnv,
+  runTurn,
+  ScriptedProvider,
+  type ApprovalRequest,
+} from "@agentdesk/runtime";
+import { createAllTools } from "@agentdesk/tools";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
 const useColor = process.stdout.isTTY === true;
@@ -16,6 +22,18 @@ const cyan = (text: string): string => paint("36", text);
 const green = (text: string): string => paint("32", text);
 const yellow = (text: string): string => paint("33", text);
 const red = (text: string): string => paint("31", text);
+
+let rl: ReturnType<typeof createInterface> | undefined;
+
+async function ask(question: string): Promise<string> {
+  rl ??= createInterface({ input: process.stdin, output: process.stdout });
+  return await rl.question(question);
+}
+
+function closePrompt(): void {
+  rl?.close();
+  rl = undefined;
+}
 
 async function loadCases(): Promise<EvalCase[]> {
   const files = (await readdir(FIXTURE_DIR))
@@ -35,13 +53,16 @@ function printEvent(event: AgentEvent): void {
       console.log(cyan(`\n▶ turn ${event.turnId}`));
       break;
     case "message.complete":
-      console.log(`  ${green("assistant")} ${event.text}`);
+      if (event.text.length > 0) console.log(`  ${green("assistant")} ${event.text}`);
       break;
     case "tool.call":
-      console.log(`  ${yellow("→ tool")} ${event.name} ${dim(JSON.stringify(event.args))}`);
+      console.log(
+        `  ${yellow("→ tool")} ${event.name} ${dim(JSON.stringify(event.args))}`,
+      );
       break;
     case "tool.result": {
-      const body = event.output.length > 160 ? `${event.output.slice(0, 160)}…` : event.output;
+      const body =
+        event.output.length > 200 ? `${event.output.slice(0, 200)}…` : event.output;
       console.log(`  ${event.ok ? green("✓") : red("✗")} ${dim(body)}`);
       break;
     }
@@ -64,6 +85,23 @@ function printEvent(event: AgentEvent): void {
   }
 }
 
+function makeApproval(autoApprove: boolean) {
+  return async ({ tool, args }: ApprovalRequest): Promise<boolean> => {
+    if (autoApprove) {
+      console.log(dim(`  (auto-approved) ${tool.name}`));
+      return true;
+    }
+    if (process.stdin.isTTY !== true) {
+      console.log(red(`  no TTY to ask — denying ${tool.name} (pass --yes to allow)`));
+      return false;
+    }
+    const answer = await ask(
+      `\n  ${yellow("approve")} ${tool.name} ${dim(JSON.stringify(args))} ? [y/N] `,
+    );
+    return /^y(es)?$/i.test(answer.trim());
+  };
+}
+
 async function runDemo(caseId: string | undefined): Promise<void> {
   const cases = await loadCases();
   const target = caseId === undefined ? cases[0] : cases.find((item) => item.id === caseId);
@@ -73,7 +111,7 @@ async function runDemo(caseId: string | undefined): Promise<void> {
     return;
   }
 
-  const tools = createMockMediaTools();
+  const tools = createAllTools();
   const provider = new ScriptedProvider(target.script, `scripted:${target.id}`);
   let messages: readonly Message[] = [];
 
@@ -86,23 +124,60 @@ async function runDemo(caseId: string | undefined): Promise<void> {
       messages,
       provider,
       tools,
+      cwd: process.cwd(),
       onEvent: printEvent,
     });
     messages = result.messages;
   }
 }
 
-async function runEval(): Promise<void> {
+interface RunOptions {
+  readonly autoApprove: boolean;
+  readonly maxSteps?: number;
+}
+
+async function runLive(task: string, options: RunOptions): Promise<void> {
+  const provider = openAIProviderFromEnv();
+  console.log(dim(`provider ${provider.id}`));
+
+  const result = await runTurn({
+    threadId: newId("thread"),
+    messages: [{ role: "user", content: task }],
+    provider,
+    tools: createAllTools(),
+    cwd: process.cwd(),
+    approval: makeApproval(options.autoApprove),
+    ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+    onEvent: printEvent,
+  });
+
+  if (result.reason === "awaiting_approval") {
+    console.log(
+      yellow(
+        `\nstopped for approval: ${result.pendingApproval?.tool.name ?? "?"} — re-run with --yes to allow`,
+      ),
+    );
+  }
+}
+
+async function runEval(live: boolean): Promise<void> {
   const cases = await loadCases();
-  const tools = createMockMediaTools();
+  const tools = createAllTools();
+  const provider = live ? openAIProviderFromEnv() : undefined;
+
+  if (live) {
+    console.log(yellow(`live eval against ${provider?.id} — this costs tokens`));
+  }
+
   const results = [];
   for (const item of cases) {
-    results.push(await runCase(item, tools));
+    results.push(
+      await runCase(item, tools, provider === undefined ? {} : { provider }),
+    );
   }
+
   console.log(formatTable(results));
-  if (results.some((result) => !result.ok)) {
-    process.exitCode = 1;
-  }
+  if (results.some((result) => !result.ok)) process.exitCode = 1;
 }
 
 function usage(): void {
@@ -111,10 +186,11 @@ function usage(): void {
       "agentdesk — local agent runtime",
       "",
       "Usage:",
-      "  pnpm dev run --mock [caseId]   replay a fixture through the real loop",
-      "  pnpm dev eval                  run every fixture, print a score table",
+      "  pnpm dev run --mock [caseId]        replay a fixture through the real loop",
+      '  pnpm dev run "<task>" [--yes]       run against the live model',
+      "  pnpm dev eval [--live]              score fixtures (scripted or live)",
       "",
-      'TODO(Week 1): run "<task>" against a live model provider.',
+      "Env: OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL (any OpenAI-compatible endpoint).",
     ].join("\n"),
   );
 }
@@ -122,26 +198,45 @@ function usage(): void {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0] ?? "help";
+  const rest = argv.slice(1);
+  const flags = rest.filter((arg) => arg.startsWith("--"));
+  const positional = rest.filter((arg) => !arg.startsWith("--"));
 
   if (command === "run") {
-    const rest = argv.slice(1);
-    const mock = rest.includes("--mock");
-    const caseId = rest.find((arg) => !arg.startsWith("--"));
-    if (!mock) {
-      console.error(yellow("live provider not wired yet — pass --mock, see TODO(Week 1)"));
+    if (flags.includes("--mock")) {
+      await runDemo(positional[0]);
+      return;
+    }
+    const task = positional.join(" ").trim();
+    if (task.length === 0) {
+      console.error(red("usage: run \"<task>\" — the task is the prompt"));
       process.exitCode = 1;
       return;
     }
-    await runDemo(caseId);
+    const maxStepsFlag = rest.find((arg) => arg.startsWith("--max-steps="));
+    await runLive(task, {
+      autoApprove: flags.includes("--yes"),
+      ...(maxStepsFlag !== undefined
+        ? { maxSteps: Number(maxStepsFlag.split("=")[1]) }
+        : {}),
+    });
     return;
   }
 
   if (command === "eval") {
-    await runEval();
+    await runEval(flags.includes("--live"));
     return;
   }
 
   usage();
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(red(`\nerror: ${message}`));
+  process.exitCode = 1;
+} finally {
+  closePrompt();
+}

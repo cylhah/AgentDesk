@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { zodToJsonSchema } from "./json-schema";
 
 /**
  * Risk tiers drive the approval gate.
@@ -64,18 +65,4 @@ export function toToolSpec(tool: ToolDef): ToolSpec {
     description: tool.description,
     parameters: zodToJsonSchema(tool.parameters),
   };
-}
-
-/**
- * TODO(Week 1, D1): swap for a real converter.
- * zod v4 ships `z.toJSONSchema`; this repo is on v3, so we degrade gracefully.
- * A wrong schema here means the model gets no argument descriptions — worth fixing early.
- */
-function zodToJsonSchema(schema: z.ZodTypeAny): unknown {
-  const candidate = (z as unknown as { toJSONSchema?: (s: unknown) => unknown })
-    .toJSONSchema;
-  if (typeof candidate === "function") {
-    return candidate(schema);
-  }
-  return { type: "object", additionalProperties: true };
 }

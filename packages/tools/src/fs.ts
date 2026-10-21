@@ -1,11 +1,12 @@
-import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 import { defineTool } from "@agentdesk/protocol";
 import { z } from "zod";
 
 /**
  * Every path a tool touches must stay inside the workspace.
- * This is the process-level stand-in for the worktree isolation landing in Week 4.
+ * This is the process-level stand-in for the worktree isolation landing in Week 4 —
+ * a real sandbox enforces this at the OS level, not with string checks.
  */
 export function resolveInside(cwd: string, path: string): string {
   const absolute = resolve(cwd, path);
@@ -42,21 +43,65 @@ export const readTool = defineTool({
   },
 });
 
-/**
- * TODO(Week 1, D2–D3) — implement these next, in this order:
- *   fs.write  { path, content }             risk: safe, but must stay inside cwd
- *   fs.patch  { path, oldText, newText }    risk: safe, must fail loudly if oldText is absent or ambiguous
- *   shell.run { command, timeoutMs }        risk: confirm, truncate output to N chars
- *   fs.glob   { pattern }                   risk: safe
- *   fs.grep   { pattern, include? }         risk: safe
- *
- * Each one: validate with zod, cap output size, never throw on "expected" failures —
- * return { ok: false, output } so the loop can feed the error back to the model.
- */
-export const pendingTools = [
-  "fs.write",
-  "fs.patch",
-  "shell.run",
-  "fs.glob",
-  "fs.grep",
-] as const;
+export const writeTool = defineTool({
+  name: "fs.write",
+  description:
+    "Create or overwrite a UTF-8 text file inside the workspace. Parent directories are created automatically.",
+  risk: "safe",
+  parameters: z.object({
+    path: z.string().describe("Workspace-relative file path"),
+    content: z.string().describe("Full file content"),
+  }),
+  async run(args, ctx) {
+    const absolute = resolveInside(ctx.cwd, args.path);
+    await mkdir(dirname(absolute), { recursive: true });
+    await writeFile(absolute, args.content, "utf8");
+    return {
+      ok: true,
+      output: `wrote ${args.content.length} chars to ${args.path}`,
+      meta: { bytes: Buffer.byteLength(args.content, "utf8") },
+    };
+  },
+});
+
+export const patchTool = defineTool({
+  name: "fs.patch",
+  description:
+    "Replace an exact text fragment in a file. Fails if the fragment is missing or appears more than once (pass replaceAll to allow that). Prefer this over rewriting whole files.",
+  risk: "safe",
+  parameters: z.object({
+    path: z.string().describe("Workspace-relative file path"),
+    oldText: z.string().min(1).describe("Exact text to find, including indentation"),
+    newText: z.string().describe("Replacement text"),
+    replaceAll: z.boolean().default(false).describe("Replace every occurrence"),
+  }),
+  async run(args, ctx) {
+    const absolute = resolveInside(ctx.cwd, args.path);
+    const raw = await readFile(absolute, "utf8");
+    const occurrences = raw.split(args.oldText).length - 1;
+
+    if (occurrences === 0) {
+      return {
+        ok: false,
+        output: `oldText not found in ${args.path}; read the file again before patching`,
+      };
+    }
+    if (occurrences > 1 && !args.replaceAll) {
+      return {
+        ok: false,
+        output: `oldText appears ${occurrences} times in ${args.path}; add surrounding context or pass replaceAll`,
+      };
+    }
+
+    const next = args.replaceAll
+      ? raw.split(args.oldText).join(args.newText)
+      : raw.replace(args.oldText, args.newText);
+    await writeFile(absolute, next, "utf8");
+
+    return {
+      ok: true,
+      output: `patched ${args.path} (${occurrences} occurrence${occurrences > 1 ? "s" : ""})`,
+      meta: { occurrences },
+    };
+  },
+});

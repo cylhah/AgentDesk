@@ -1,5 +1,9 @@
 import type { Message, ToolDef } from "@agentdesk/protocol";
-import { runTurn, ScriptedProvider } from "@agentdesk/runtime";
+import {
+  runTurn,
+  ScriptedProvider,
+  type ModelProvider,
+} from "@agentdesk/runtime";
 import type { CaseResult, EvalCase, ExpectedCall } from "./types";
 
 function argsMatch(actual: unknown, expected: Readonly<Record<string, unknown>> | undefined): boolean {
@@ -35,8 +39,18 @@ function matchSequence(
   return failures;
 }
 
-export async function runCase(testCase: EvalCase, tools: readonly ToolDef[]): Promise<CaseResult> {
-  const provider = new ScriptedProvider(testCase.script, `scripted:${testCase.id}`);
+export interface RunCaseOptions {
+  /** Live model instead of the fixture's script. */
+  readonly provider?: ModelProvider;
+}
+
+export async function runCase(
+  testCase: EvalCase,
+  tools: readonly ToolDef[],
+  options: RunCaseOptions = {},
+): Promise<CaseResult> {
+  const provider =
+    options.provider ?? new ScriptedProvider(testCase.script, `scripted:${testCase.id}`);
   const calls: { name: string; args: unknown }[] = [];
 
   let messages: readonly Message[] = [];

@@ -2,7 +2,7 @@
 
 本机执行、云端管控的 Agent 运行平台。第一个落地场景：**座舱媒体 Agent**。
 
-> 状态：Week 0 完成（骨架 + 协议 + 评测夹具）。下一步见 `docs/roadmap.md`。
+> 状态：Week 1 完成（真实模型已接通、6 个文件/Shell 工具可用）。下一步见 `docs/roadmap.md`。
 
 ## 为什么不是"又一个 AI 聊天框"
 
@@ -16,10 +16,17 @@
 ```bash
 pnpm install
 
-pnpm demo     # 把 media-01 跑一遍，打印完整事件流
-pnpm eval     # 跑全部 5 条夹具，输出通过率表
-pnpm test     # 单元测试
-pnpm build    # tsc 类型检查（严格模式）
+pnpm demo                                  # 回放 media-01，打印完整事件流
+pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
+pnpm test                                  # 25 个单元测试
+pnpm build                                 # tsc 严格模式类型检查
+
+# 接真实模型（任意 OpenAI 兼容端点）
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.deepseek.com/v1   # 可选
+export OPENAI_MODEL=deepseek-chat                    # 可选
+pnpm dev run "放周杰伦的晴天"
+pnpm dev eval --live                                 # 用真实模型跑夹具，会花钱
 ```
 
 预期输出（demo，节选）：
@@ -53,13 +60,26 @@ fixtures/    评测用例（JSON）
 docs/        ADR、harness 拆解问题清单、路线图
 ```
 
-## 待办（Week 1）
+## 工具
 
-- [ ] `fs.write` / `fs.patch`（D2）
-- [ ] `shell.run`（超时 + 输出截断）（D3）
-- [ ] `fs.glob` / `fs.grep`（D3）
-- [ ] 真实 provider（OpenAI 兼容协议，流式 + tool calling）（D1）
-- [ ] `zodToJsonSchema` 换成真正的转换器（当前是降级实现）
+| 工具 | 风险 | 说明 |
+|---|---|---|
+| `fs.read` | safe | 带行号读取，支持 offset/limit |
+| `fs.write` | safe | 写文件，自动建目录 |
+| `fs.patch` | safe | 精确片段替换；找不到或不唯一时**失败**而不是猜 |
+| `fs.glob` | safe | `**` 跨层级，跳过 node_modules/.git |
+| `fs.grep` | safe | 正则搜索，输出 `path:line: text` |
+| `shell.run` | **confirm** | 平台 shell，超时强杀，输出截断 8KB |
+| `search_media` 等 7 个 | safe/confirm | 媒体域 mock，`set_window` 为 confirm |
+
+所有路径都被 `resolveInside` 限制在工作区内。`confirm` 级工具没有审批回调时**不执行**，回合以 `awaiting_approval` 结束。
+
+## 待办（Week 2）
+
+- [ ] 会话 JSONL 落盘 + `resume`
+- [ ] 工具结果压缩 + 上下文预算初版
+- [ ] 事件 NDJSON 输出，可回放
+- [ ] 流式输出（现在是非流式，UI 阶段再补）
 
 ## 设计文档
 
