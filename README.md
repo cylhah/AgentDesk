@@ -2,7 +2,7 @@
 
 本机执行、云端管控的 Agent 运行平台。第一个落地场景：**座舱媒体 Agent**。
 
-> 状态：Week 1 完成（真实模型已接通、6 个文件/Shell 工具可用）。下一步见 `docs/roadmap.md`。
+> 状态：Week 1 完成（真实模型已接通、6 个文件/Shell 工具可用），并在 `deepseek-chat` 上拿到首个 live baseline。下一步见 `docs/roadmap.md`。
 
 ## 为什么不是"又一个 AI 聊天框"
 
@@ -18,7 +18,7 @@ pnpm install
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 25 个单元测试
+pnpm test                                  # 28 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
@@ -54,7 +54,7 @@ apps/
 packages/
   protocol/  事件、消息、工具契约（zod）
   runtime/   agent loop、provider 抽象、审批闸门
-  tools/     fs.read（已实现）+ 媒体域 mock
+  tools/     fs_* / shell_run + 媒体域 mock + 场景策略（mediaSystemPrompt）
   eval/      夹具执行器 + 指标表
 fixtures/    评测用例（JSON）
 docs/        ADR、harness 拆解问题清单、路线图
@@ -64,15 +64,31 @@ docs/        ADR、harness 拆解问题清单、路线图
 
 | 工具 | 风险 | 说明 |
 |---|---|---|
-| `fs.read` | safe | 带行号读取，支持 offset/limit |
-| `fs.write` | safe | 写文件，自动建目录 |
-| `fs.patch` | safe | 精确片段替换；找不到或不唯一时**失败**而不是猜 |
-| `fs.glob` | safe | `**` 跨层级，跳过 node_modules/.git |
-| `fs.grep` | safe | 正则搜索，输出 `path:line: text` |
-| `shell.run` | **confirm** | 平台 shell，超时强杀，输出截断 8KB |
+| `fs_read` | safe | 带行号读取，支持 offset/limit |
+| `fs_write` | safe | 写文件，自动建目录 |
+| `fs_patch` | safe | 精确片段替换；找不到或不唯一时**失败**而不是猜 |
+| `fs_glob` | safe | `**` 跨层级，跳过 node_modules/.git |
+| `fs_grep` | safe | 正则搜索，输出 `path:line: text` |
+| `shell_run` | **confirm** | 平台 shell，超时强杀，输出截断 8KB |
 | `search_media` 等 7 个 | safe/confirm | 媒体域 mock，`set_window` 为 confirm |
 
+工具名必须匹配 `^[a-zA-Z0-9_-]{1,64}$` —— 这是 OpenAI / DeepSeek function calling 的硬约束，**点号会让请求直接 400**，模型一个 token 都没跑。所以是 `fs_read` 而不是 `fs.read`；`defineTool` 在定义时就校验，写错名字启动即崩，不会拖到发请求才暴露。
+
 所有路径都被 `resolveInside` 限制在工作区内。`confirm` 级工具没有审批回调时**不执行**，回合以 `awaiting_approval` 结束。
+
+## 真实模型 baseline
+
+`deepseek-chat`（`https://api.deepseek.com/v1`），2026-10-21 首次 live eval：
+
+| case | result | steps | tokens | calls |
+|---|---|---|---|---|
+| media-01 | PASS | 2 | 46 | search_media > play |
+| media-02 | PASS | 2 | 162 | search_media > play |
+| media-03 | PASS | 3 | 228 | search_media > play > next |
+| media-04 | PASS | 0 | 3 | — （`awaiting_approval`，工具未执行） |
+| media-05 | PASS | 0 | 10 | — （域外请求，不调工具） |
+
+**5/5**。但注意这个数字的口径：它测的是「策略 + 工具 + loop + 模型」的组合，不是模型单体。同一个模型在没有 [mediaSystemPrompt](./packages/tools/src/media.policy.ts) 时是 3/5——会列歌单而不播放，会自己在文本里问「要打开车窗吗」而不是调工具。
 
 ## 待办（Week 2）
 

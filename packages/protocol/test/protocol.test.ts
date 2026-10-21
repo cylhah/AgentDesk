@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, estimateTokens, newId } from "@agentdesk/protocol";
+import { z } from "zod";
+import {
+  AgentEventSchema,
+  defineTool,
+  estimateTokens,
+  newId,
+  TOOL_NAME_PATTERN,
+} from "@agentdesk/protocol";
 
 describe("AgentEventSchema", () => {
   it("accepts a well-formed tool.call event", () => {
@@ -22,6 +29,25 @@ describe("AgentEventSchema", () => {
     expect(() =>
       AgentEventSchema.parse({ type: "turn.end", turnId: "t", ts: 0, reason: "whatever" }),
     ).toThrow();
+  });
+});
+
+describe("defineTool", () => {
+  const base = {
+    description: "test tool",
+    risk: "safe" as const,
+    parameters: z.object({}),
+    run: async () => ({ ok: true, output: "" }),
+  };
+
+  it("rejects names the function-calling API cannot accept", () => {
+    // DeepSeek/OpenAI both reject `fs.read` with HTTP 400 before the model ever sees it.
+    expect(() => defineTool({ ...base, name: "fs.read" })).toThrow(/invalid tool name/);
+  });
+
+  it("accepts snake_case names", () => {
+    expect(defineTool({ ...base, name: "fs_read" }).name).toBe("fs_read");
+    expect(TOOL_NAME_PATTERN.test("shell_run")).toBe(true);
   });
 });
 

@@ -9,6 +9,7 @@ export * from "./fs";
 export * from "./search";
 export * from "./shell";
 export * from "./media.mock";
+export * from "./media.policy";
 
 /** File + shell tools: the "coding" domain. Scenario-agnostic plumbing. */
 export function createWorkspaceTools(): ToolDef[] {

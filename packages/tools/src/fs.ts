@@ -18,7 +18,7 @@ export function resolveInside(cwd: string, path: string): string {
 }
 
 export const readTool = defineTool({
-  name: "fs.read",
+  name: "fs_read",
   description:
     "Read a UTF-8 text file inside the workspace. Returns numbered lines, at most `limit` lines starting from `offset` (1-based).",
   risk: "safe",
@@ -44,7 +44,7 @@ export const readTool = defineTool({
 });
 
 export const writeTool = defineTool({
-  name: "fs.write",
+  name: "fs_write",
   description:
     "Create or overwrite a UTF-8 text file inside the workspace. Parent directories are created automatically.",
   risk: "safe",
@@ -65,7 +65,7 @@ export const writeTool = defineTool({
 });
 
 export const patchTool = defineTool({
-  name: "fs.patch",
+  name: "fs_patch",
   description:
     "Replace an exact text fragment in a file. Fails if the fragment is missing or appears more than once (pass replaceAll to allow that). Prefer this over rewriting whole files.",
   risk: "safe",

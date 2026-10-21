@@ -42,6 +42,8 @@ function matchSequence(
 export interface RunCaseOptions {
   /** Live model instead of the fixture's script. */
   readonly provider?: ModelProvider;
+  /** Scenario policy handed to the model. Without it a live model behaves like a chat app. */
+  readonly system?: string;
 }
 
 export async function runCase(
@@ -66,6 +68,7 @@ export async function runCase(
       messages,
       provider,
       tools,
+      ...(options.system !== undefined ? { system: options.system } : {}),
       onEvent: (event) => {
         if (event.type === "tool.call") {
           calls.push({ name: event.name, args: event.args });

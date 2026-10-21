@@ -10,7 +10,7 @@ const MAX_OUTPUT_CHARS = 8_000;
  * but the approval gate is what stops it before it starts.
  */
 export const shellTool = defineTool({
-  name: "shell.run",
+  name: "shell_run",
   description:
     "Run a shell command in the workspace and return combined stdout/stderr. Output is truncated. Requires user approval.",
   risk: "confirm",

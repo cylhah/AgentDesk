@@ -55,7 +55,7 @@ async function walk(
 }
 
 export const globTool = defineTool({
-  name: "fs.glob",
+  name: "fs_glob",
   description:
     "List workspace files matching a glob pattern (`*` within a segment, `**` across segments). Skips node_modules, .git and dotfiles.",
   risk: "safe",
@@ -77,7 +77,7 @@ export const globTool = defineTool({
 });
 
 export const grepTool = defineTool({
-  name: "fs.grep",
+  name: "fs_grep",
   description:
     "Search file contents with a JavaScript regular expression. Returns `path:line: text` up to `limit` matches. Skips binaries and files above 1 MB.",
   risk: "safe",

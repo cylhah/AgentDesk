@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createAllTools,
   globTool,
   grepTool,
   patchTool,
@@ -9,6 +10,7 @@ import {
   shellTool,
   writeTool,
 } from "@agentdesk/tools";
+import { TOOL_NAME_PATTERN } from "@agentdesk/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 let dir = "";
@@ -101,5 +103,15 @@ describe("shell tool", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toContain("agentdesk");
     expect(result.output).toContain("exit=0");
+  });
+});
+
+describe("tool catalog", () => {
+  it("only exposes wire-legal names to the model", () => {
+    // Regression guard: `fs.read` used to pass every offline test and then get
+    // rejected by the real endpoint with HTTP 400 before the model ran at all.
+    for (const tool of createAllTools()) {
+      expect(TOOL_NAME_PATTERN.test(tool.name), `illegal tool name: ${tool.name}`).toBe(true);
+    }
   });
 });

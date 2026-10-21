@@ -9,7 +9,7 @@ import {
   ScriptedProvider,
   type ApprovalRequest,
 } from "@agentdesk/runtime";
-import { createAllTools } from "@agentdesk/tools";
+import { createAllTools, mediaSystemPrompt } from "@agentdesk/tools";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
 const useColor = process.stdout.isTTY === true;
@@ -124,6 +124,7 @@ async function runDemo(caseId: string | undefined): Promise<void> {
       messages,
       provider,
       tools,
+      system: mediaSystemPrompt,
       cwd: process.cwd(),
       onEvent: printEvent,
     });
@@ -145,6 +146,7 @@ async function runLive(task: string, options: RunOptions): Promise<void> {
     messages: [{ role: "user", content: task }],
     provider,
     tools: createAllTools(),
+    system: mediaSystemPrompt,
     cwd: process.cwd(),
     approval: makeApproval(options.autoApprove),
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
@@ -172,7 +174,10 @@ async function runEval(live: boolean): Promise<void> {
   const results = [];
   for (const item of cases) {
     results.push(
-      await runCase(item, tools, provider === undefined ? {} : { provider }),
+      await runCase(item, tools, {
+        system: mediaSystemPrompt,
+        ...(provider === undefined ? {} : { provider }),
+      }),
     );
   }
 

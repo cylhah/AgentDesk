@@ -43,6 +43,13 @@ export interface ToolSpec {
   readonly parameters: unknown;
 }
 
+/**
+ * OpenAI-compatible function names: `^[a-zA-Z0-9_-]{1,64}$`.
+ * A dot is rejected by the API (`fs.read` → HTTP 400), so names use underscores.
+ * Checked at definition time: a bad name fails at startup, not on the first request.
+ */
+export const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
 export function defineTool<S extends z.ZodTypeAny>(def: {
   name: string;
   description: string;
@@ -50,6 +57,11 @@ export function defineTool<S extends z.ZodTypeAny>(def: {
   parameters: S;
   run: (args: z.infer<S>, ctx: ToolContext) => Promise<ToolResult>;
 }): ToolDef {
+  if (!TOOL_NAME_PATTERN.test(def.name)) {
+    throw new Error(
+      `invalid tool name "${def.name}": must match ${String(TOOL_NAME_PATTERN)} (dots are rejected by OpenAI function calling)`,
+    );
+  }
   return {
     name: def.name,
     description: def.description,
