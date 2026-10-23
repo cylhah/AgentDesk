@@ -742,6 +742,18 @@ function parseArgs(args: readonly string[]): ParsedArgs {
   };
 }
 
+const KNOWN_COMMANDS = new Set([
+  "run",
+  "chat",
+  "demo",
+  "eval",
+  "sessions",
+  "items",
+  "audit",
+  "replay",
+  "help",
+]);
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0] ?? "help";
@@ -754,6 +766,16 @@ async function main(): Promise<void> {
     ...(parsed.summarizeAt !== undefined ? { summarizeAt: parsed.summarizeAt } : {}),
     ...(parsed.maxSteps !== undefined ? { maxSteps: parsed.maxSteps } : {}),
   };
+
+  // `pnpm dev "放首歌"` (missing `run`) used to print help and exit 0, which reads
+  // like success. Say what went wrong and how to fix it instead.
+  if (!KNOWN_COMMANDS.has(command)) {
+    console.error(red(`unknown command: ${command}`));
+    console.error(dim(`  did you mean: pnpm dev run "${command}"`));
+    console.error(dim(`  all commands: ${[...KNOWN_COMMANDS].join(" ")}`));
+    process.exitCode = 1;
+    return;
+  }
 
   if (parsed.store !== undefined && parsed.store !== "jsonl" && parsed.store !== "sqlite") {
     console.error(red(`unknown store: ${parsed.store} (expected jsonl or sqlite)`));
