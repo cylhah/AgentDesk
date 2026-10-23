@@ -12,6 +12,7 @@ export default defineConfig({
       "@agentdesk/tools": resolveFromRoot("./packages/tools/src/index.ts"),
       "@agentdesk/eval": resolveFromRoot("./packages/eval/src/index.ts"),
       "@agentdesk/store": resolveFromRoot("./packages/store/src/index.ts"),
+      "@agentdesk/workspace": resolveFromRoot("./packages/workspace/src/index.ts"),
     },
   },
   test: {

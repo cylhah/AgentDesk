@@ -11,6 +11,7 @@
     "@agentdesk/protocol": "workspace:*",
     "@agentdesk/runtime": "workspace:*",
     "@agentdesk/store": "workspace:*",
-    "@agentdesk/tools": "workspace:*"
+    "@agentdesk/tools": "workspace:*",
+    "@agentdesk/workspace": "workspace:*"
   }
 }

@@ -38,6 +38,9 @@ importers:
       '@agentdesk/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+      '@agentdesk/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
 
   packages/eval:
     dependencies:
@@ -77,6 +80,8 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+
+  packages/workspace: {}
 
 packages:
 

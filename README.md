@@ -136,23 +136,61 @@ runs/sessions/<thread>.events.ndjson  事件流：AgentEvent 逐条，可 replay
 
 压缩触发用的是估算 token，所以估算器必须靠谱：`字符数/4` 在中文上低估约 3 倍（估 7.3k、实际 21k），已改成 CJK 按字符计权（~0.65 token/字）。这个 bug 是量出来的，不是想出来的。
 
-## 待办（Week 4）
+## 审批、工作区与审计
 
-Week 3 已完成：
+**延迟审批（不是重跑）**：`confirm` 级工具让回合停在 `awaiting_approval`，宿主决定后用 `resume: { callId, decision }` 从**原地**继续同一个 turn。批准执行原调用；拒绝把错误回灌给模型。
 
-- [x] `Thread/Turn/Item` 落 SQLite（两套实现 + 同一套 contract 测试）
-- [x] 真实 token 计数（`usage` 事件带 `source: api | estimate`）
-- [x] 摘要式压缩 + 持久化（80 条 → 117 tokens，下一轮 1.2k）
-- [x] 压缩前后对比（见上表）
-- [x] 工具子集：media 场景 13 → 7 个工具，**input tokens 5422 → 3073（-43%）**
-- [x] 场景切换：`--scenario media|coding`，同一 runtime 两套工具+策略
+```
+$ pnpm dev run "把车窗打开"            # 非 TTY，默认拒绝
+  ⏸ approval required set_window {"action":"open"}
+  ⏹ awaiting_approval
+  no TTY to ask — denying set_window (pass --yes to allow)
+  ✗ denied set_window
+  assistant 车窗没有打开，因为确认被拒绝了；如果你需要，我可以再试一次。
+  ⏹ completed
 
-Week 4 开始：
+$ pnpm dev run "把车窗打开" --yes      # 批准
+  ⏸ approval required set_window {"action":"open"}
+  ✓ approved set_window
+  → tool set_window {"action":"open"}
+  assistant 正在为你打开车窗。
+```
 
-- [ ] worktree 隔离（写操作不再靠 `resolveInside` 的字符串检查）
-- [ ] 审批恢复：`awaiting_approval` 之后能继续，而不是让宿主重跑
-- [ ] 审计日志：谁、在哪个仓库、跑了什么、改了哪些文件、烧了多少 token
-- [ ] 流式输出（UI 阶段再补）
+**worktree 隔离**：`--worktree` 给会话开一个 git worktree（`runs/worktrees/<thread>`），文件工具只能落在里面。
+
+```
+$ pnpm dev run "在仓库根目录新建 notes.md，内容写 hello world" --scenario coding --worktree
+  → tool fs_write {"path":"notes.md","content":"hello world\n"}
+  workspace   ...\runs\worktrees\thread_96327a49-...
+```
+
+实测：worktree 里有 `notes.md`，用户 checkout 里没有。`resolveInside` 仍保留（第一道闸），但真正的隔离来自操作系统视图。
+
+**审计**：`runs/audit.ndjson` 一人一行——谁、哪个工作区、什么工具、风险级、批准还是拒绝、耗时、每轮 token。
+
+```
+$ pnpm dev audit
+time      thread        kind      what        decision  cost
+12:57:37  5b47b149-534  approval  set_window  denied
+12:57:38  5b47b149-534  turn      completed             1951/49
+12:57:27  96327a49-fd8  tool      fs_write    ok        2ms
+```
+
+## 待办（Week 5）
+
+Week 4 已完成：
+
+- [x] worktree 隔离（每会话一个 git worktree，写操作落在里面）
+- [x] 审批恢复：`resume { callId, decision }` 原地继续，拒绝走错误回灌
+- [x] 审计日志：`runs/audit.ndjson` + `pnpm dev audit`
+- [x] 断言的另一面：审批恢复后仍不产生孤儿 tool call（聚合多段 usage 记进 turn）
+
+Week 5 开始：
+
+- [ ] Electron 宿主 + JsBridge（模拟 CEF 容器）
+- [ ] 事件流推送与断线重连
+- [ ] 车机 HMI 模拟界面
+- [ ] 流式输出（现在仍是非流式）
 
 ## 设计文档
 

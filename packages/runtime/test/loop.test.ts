@@ -175,6 +175,82 @@ describe("runTurn", () => {
     });
   });
 
+  it("resumes a parked approval: approve executes the exact call and continues", async () => {
+    const first = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("开车窗"),
+      provider: new ScriptedProvider([
+        { text: "", toolCalls: [{ id: "c1", name: "set_window", args: { action: "open" } }] },
+      ]),
+      tools,
+    });
+    expect(first.reason).toBe("awaiting_approval");
+
+    const events: AgentEvent[] = [];
+    const second = await runTurn({
+      threadId: "thread_1",
+      turnId: first.turnId,
+      messages: first.messages,
+      provider: new ScriptedProvider([{ text: "已打开车窗。", toolCalls: [] }]),
+      tools,
+      resume: { callId: "c1", decision: "approve" },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(second.reason).toBe("completed");
+    expect(events.some((event) => event.type === "tool.approval_resolved")).toBe(true);
+    expect(events.some((event) => event.type === "tool.call")).toBe(true);
+    expect(
+      second.messages.some((message) => message.role === "tool" && message.toolCallId === "c1"),
+    ).toBe(true);
+    // Same turn, continued — not a new one.
+    expect(second.turnId).toBe(first.turnId);
+  });
+
+  it("resumes a parked approval: deny feeds an error back instead of executing", async () => {
+    const first = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("开车窗"),
+      provider: new ScriptedProvider([
+        { text: "", toolCalls: [{ id: "c1", name: "set_window", args: { action: "open" } }] },
+      ]),
+      tools,
+    });
+
+    const events: AgentEvent[] = [];
+    const second = await runTurn({
+      threadId: "thread_1",
+      messages: first.messages,
+      provider: new ScriptedProvider([{ text: "好的，不打开。", toolCalls: [] }]),
+      tools,
+      resume: { callId: "c1", decision: "deny" },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(second.reason).toBe("completed");
+    expect(events.some((event) => event.type === "tool.call")).toBe(false);
+    expect(
+      second.messages.some(
+        (message) => message.role === "tool" && message.content.includes("denied"),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails loudly when asked to resume a call that is not pending", async () => {
+    const events: AgentEvent[] = [];
+    const result = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("hi"),
+      provider: new ScriptedProvider([{ text: "x", toolCalls: [] }]),
+      tools,
+      resume: { callId: "missing", decision: "approve" },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(result.reason).toBe("error");
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
   it("stops at maxSteps when the model never stops calling tools", async () => {
     const provider: ModelProvider = {
       id: "always-calls",

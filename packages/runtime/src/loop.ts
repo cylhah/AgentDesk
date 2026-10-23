@@ -49,6 +49,18 @@ export interface RunTurnInput {
   };
   /** Summary carried over from a previous turn — recomputing it costs a full extra request. */
   readonly priorSummary?: { readonly text: string; readonly frontier: number };
+  /**
+   * Continue a turn that stopped at `awaiting_approval`.
+   *
+   * Without this the host had to re-run the turn from scratch, which either
+   * replayed side effects or lost the pending call. The decision settles the
+   * exact `callId` that was parked: approve runs the tool now, deny feeds an
+   * error back to the model like any other tool failure.
+   */
+  readonly resume?: {
+    readonly callId: string;
+    readonly decision: "approve" | "deny";
+  };
   readonly approval?: ApprovalFn;
   readonly onEvent?: (event: AgentEvent) => void;
   readonly cwd?: string;
@@ -105,6 +117,88 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       : undefined;
 
   emit({ type: "turn.start", turnId, ts: now() });
+
+  // Settle a call that a previous run parked at `awaiting_approval`.
+  // The assistant message holding the tool call is already in `messages`,
+  // so executing here continues the same turn instead of replaying it.
+  if (input.resume !== undefined) {
+    const { callId, decision } = input.resume;
+    let pendingCall: { name: string; args: unknown } | undefined;
+    for (let index = messages.length - 1; index >= 0 && pendingCall === undefined; index -= 1) {
+      const message = messages[index];
+      const call = message?.toolCalls?.find((candidate) => candidate.id === callId);
+      if (call !== undefined) pendingCall = { name: call.name, args: call.args };
+    }
+
+    if (pendingCall === undefined) {
+      reason = "error";
+      emit({
+        type: "error",
+        turnId,
+        message: `cannot resume: no pending tool call ${callId}`,
+        recoverable: false,
+        ts: now(),
+      });
+      emit({ type: "turn.end", turnId, reason, ts: now() });
+      return {
+        turnId,
+        reason,
+        messages,
+        usage: { inputTokens, outputTokens, steps },
+      };
+    }
+
+    const tool = input.tools.find((candidate) => candidate.name === pendingCall?.name);
+    emit({
+      type: "tool.approval_resolved",
+      turnId,
+      callId,
+      name: pendingCall.name,
+      decision,
+      ts: now(),
+    });
+
+    if (decision === "deny" || tool === undefined) {
+      messages.push({
+        role: "tool",
+        toolCallId: callId,
+        content: `ERROR user denied ${pendingCall.name} — do not retry, explain what you cannot do`,
+      });
+    } else {
+      emit({
+        type: "tool.call",
+        turnId,
+        callId,
+        name: tool.name,
+        args: pendingCall.args,
+        ts: now(),
+      });
+      const startedAt = now();
+      let ok = false;
+      let output = "";
+      try {
+        const result = await tool.run(pendingCall.args, { threadId: input.threadId, turnId, cwd });
+        ok = result.ok;
+        output = result.output;
+      } catch (error) {
+        output = `ERROR ${error instanceof Error ? error.message : String(error)}`;
+      }
+      emit({
+        type: "tool.result",
+        turnId,
+        callId,
+        ok,
+        output,
+        durationMs: now() - startedAt,
+        ts: now(),
+      });
+      messages.push({
+        role: "tool",
+        toolCallId: callId,
+        content: ok ? output : `ERROR ${output}`,
+      });
+    }
+  }
 
   outer: for (; steps < maxSteps; steps += 1) {
     if (input.signal?.aborted === true) {

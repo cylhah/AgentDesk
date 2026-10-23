@@ -17,11 +17,13 @@ import {
   type ApprovalRequest,
   type RunTurnResult,
 } from "@agentdesk/runtime";
-import { JsonlSessionStore, SqliteSessionStore, deriveItems, type SessionStore } from "@agentdesk/store";
+import { AuditLog, JsonlSessionStore, SqliteSessionStore, deriveItems, type SessionStore } from "@agentdesk/store";
 import { mediaScenario, resolveScenario, type Scenario } from "@agentdesk/tools";
+import { createWorktree } from "@agentdesk/workspace";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
 const RUN_DIR = resolve(process.cwd(), "runs/sessions");
+const auditLog = new AuditLog(resolve(process.cwd(), "runs/audit.ndjson"));
 // Chosen in main() from `--store`; both satisfy SessionStore.
 let store: SessionStore = new JsonlSessionStore(RUN_DIR);
 let storeKind: "jsonl" | "sqlite" = "jsonl";
@@ -84,6 +86,11 @@ function printEvent(event: AgentEvent): void {
         `  ${red("⏸ approval required")} ${event.name} ${dim(JSON.stringify(event.args))}`,
       );
       break;
+    case "tool.approval_resolved":
+      console.log(
+        `  ${event.decision === "approve" ? green("✓ approved") : red("✗ denied")} ${event.name}`,
+      );
+      break;
     case "context.summarized":
       console.log(
         dim(
@@ -119,23 +126,6 @@ function printEvent(event: AgentEvent): void {
   }
 }
 
-function makeApproval(autoApprove: boolean) {
-  return async ({ tool, args }: ApprovalRequest): Promise<boolean> => {
-    if (autoApprove) {
-      console.log(dim(`  (auto-approved) ${tool.name}`));
-      return true;
-    }
-    if (process.stdin.isTTY !== true) {
-      console.log(red(`  no TTY to ask — denying ${tool.name} (pass --yes to allow)`));
-      return false;
-    }
-    const answer = await ask(
-      `\n  ${yellow("approve")} ${tool.name} ${dim(JSON.stringify(args))} ? [y/N] `,
-    );
-    return /^y(es)?$/i.test(answer.trim());
-  };
-}
-
 /** Conversation state a host keeps across turns. */
 interface Host {
   readonly threadId: string;
@@ -151,12 +141,15 @@ interface Host {
   readonly tools: readonly ToolDef[];
   /** Persisted semantic summary of the head of the conversation, if any. */
   summary?: { readonly text: string; readonly frontier: number };
+  /** Where this session is allowed to work: the repo, or an isolated worktree. */
+  readonly cwd: string;
 }
 
 async function openHost(
   resumeId: string | undefined,
   providerId: string,
   scenario: Scenario,
+  isolate: boolean,
 ): Promise<Host> {
   const tools = scenario.tools;
 
@@ -169,14 +162,19 @@ async function openHost(
       system: loaded.header.system ?? scenario.systemPrompt,
       tracePath: join(RUN_DIR, `${resumeId}.events.ndjson`),
       tools,
+      // A resumed session keeps working where it was created (worktree included).
+      cwd: loaded.header.cwd,
       ...(loaded.summary !== undefined ? { summary: loaded.summary } : {}),
     };
   }
 
   const threadId = newId("thread");
+  const cwd = isolate
+    ? (await createWorktree({ repo: process.cwd(), threadId })).path
+    : process.cwd();
   await store.create({
     threadId,
-    cwd: process.cwd(),
+    cwd,
     provider: providerId,
     system: scenario.systemPrompt,
   });
@@ -186,6 +184,7 @@ async function openHost(
     system: scenario.systemPrompt,
     tracePath: join(RUN_DIR, `${threadId}.events.ndjson`),
     tools,
+    cwd,
   };
 }
 
@@ -194,12 +193,17 @@ interface TurnOptions {
   readonly maxSteps?: number;
   readonly summarize?: boolean;
   readonly summarizeAt?: number;
+  readonly worktree?: boolean;
 }
 
 /**
  * Runs one turn and durably records it *before* the next turn starts:
  * the event trace first (what happened), then the messages (what it meant).
  * A crash mid-write loses at most the last line, never the whole session.
+ *
+ * A turn that stops at `awaiting_approval` is continued in place (same turnId,
+ * same messages) once the host decides — re-running it from scratch would replay
+ * side effects and hide the pending call from the model.
  */
 async function runOneTurn(host: Host, task: string, options: TurnOptions): Promise<RunTurnResult> {
   const provider = openAIProviderFromEnv();
@@ -211,30 +215,65 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
   host.messages = [...host.messages, userMessage];
 
   const trace: AgentEvent[] = [];
-  const result = await runTurn({
-    threadId: host.threadId,
-    turnId,
-    messages: host.messages,
-    provider,
-    tools: host.tools,
-    system: host.system,
-    cwd: process.cwd(),
-    approval: makeApproval(options.autoApprove),
-    ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
-    ...(options.summarize === true
-      ? {
-          summarizer: makeProviderSummarizer(provider),
-          ...(host.summary !== undefined ? { priorSummary: host.summary } : {}),
-          ...(options.summarizeAt !== undefined
-            ? { summarizeAt: { atTokens: options.summarizeAt } }
-            : {}),
-        }
-      : {}),
-    onEvent: (event) => {
-      printEvent(event);
-      trace.push(event);
-    },
-  });
+  const onEvent = (event: AgentEvent): void => {
+    printEvent(event);
+    trace.push(event);
+  };
+
+  const call = async (
+    messages: readonly Message[],
+    resume?: { callId: string; decision: "approve" | "deny" },
+  ): Promise<RunTurnResult> =>
+    await runTurn({
+      threadId: host.threadId,
+      turnId,
+      messages,
+      provider,
+      tools: host.tools,
+      system: host.system,
+      cwd: host.cwd,
+      // No approval callback on purpose: the turn parks at `awaiting_approval`
+      // and `decidePending` resumes it with the exact callId. That keeps the
+      // recorded history valid (a parked call gets a result, not an orphan) and
+      // mirrors how a UI host will work — ask later, resume the same turn.
+      ...(resume !== undefined ? { resume } : {}),
+      ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+      ...(options.summarize === true
+        ? {
+            summarizer: makeProviderSummarizer(provider),
+            ...(host.summary !== undefined ? { priorSummary: host.summary } : {}),
+            ...(options.summarizeAt !== undefined
+              ? { summarizeAt: { atTokens: options.summarizeAt } }
+              : {}),
+          }
+        : {}),
+      onEvent,
+    });
+
+  let result = await call(host.messages);
+  // A resumed turn is a *continuation*: sum the segments so the recorded cost
+  // reflects every request the turn actually made.
+  let usage = result.usage;
+  while (result.reason === "awaiting_approval" && result.pendingApproval !== undefined) {
+    const pending = result.pendingApproval;
+    const decision = await decidePending(pending, options.autoApprove);
+    await auditLog.record({
+      threadId: host.threadId,
+      turnId,
+      kind: "approval",
+      cwd: host.cwd,
+      tool: pending.tool.name,
+      risk: pending.tool.risk,
+      decision: decision === "approve" ? "approved" : "denied",
+      args: summarizeArgs(pending.args),
+    });
+    result = await call(result.messages, { callId: pending.callId, decision });
+    usage = {
+      inputTokens: usage.inputTokens + result.usage.inputTokens,
+      outputTokens: usage.outputTokens + result.usage.outputTokens,
+      steps: usage.steps + result.usage.steps,
+    };
+  }
 
   host.messages = [...result.messages];
   for (const message of result.messages.slice(before + 1)) {
@@ -243,7 +282,7 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
   await store.appendTurn(host.threadId, {
     turnId,
     reason: result.reason,
-    usage: result.usage,
+    usage,
   });
 
   // Persist a fresh summary so the next turn reuses it instead of paying again.
@@ -254,6 +293,16 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
     await store.saveSummary(host.threadId, result.summary);
     host.summary = result.summary;
   }
+
+  await recordToolAudit(host, turnId, trace);
+  await auditLog.record({
+    threadId: host.threadId,
+    turnId,
+    kind: "turn",
+    cwd: host.cwd,
+    reason: result.reason,
+    tokens: { input: usage.inputTokens, output: usage.outputTokens },
+  });
 
   if (trace.length > 0) {
     await mkdir(dirname(host.tracePath), { recursive: true });
@@ -267,9 +316,59 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
   return result;
 }
 
+/** One audit line per executed tool: what, in which workspace, how long, ok? */
+async function recordToolAudit(host: Host, turnId: string, trace: readonly AgentEvent[]): Promise<void> {
+  const results = new Map(
+    trace
+      .filter((event): event is Extract<AgentEvent, { type: "tool.result" }> => event.type === "tool.result")
+      .map((event) => [event.callId, event]),
+  );
+
+  for (const event of trace) {
+    if (event.type !== "tool.call") continue;
+    const tool = host.tools.find((candidate) => candidate.name === event.name);
+    const outcome = results.get(event.callId);
+    await auditLog.record({
+      threadId: host.threadId,
+      turnId,
+      kind: "tool",
+      cwd: host.cwd,
+      tool: event.name,
+      ...(tool !== undefined ? { risk: tool.risk } : {}),
+      ...(outcome !== undefined ? { ok: outcome.ok, durationMs: outcome.durationMs } : {}),
+      args: summarizeArgs(event.args),
+    });
+  }
+}
+
+function summarizeArgs(args: unknown): string {
+  const text = JSON.stringify(args ?? {});
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
+/** Host decision for a parked call: auto-approve, deny without a TTY, or ask. */
+async function decidePending(
+  pending: ApprovalRequest,
+  autoApprove: boolean,
+): Promise<"approve" | "deny"> {
+  if (autoApprove) {
+    console.log(dim(`  (auto-approved) ${pending.tool.name}`));
+    return "approve";
+  }
+  if (process.stdin.isTTY !== true) {
+    console.log(red(`  no TTY to ask — denying ${pending.tool.name} (pass --yes to allow)`));
+    return "deny";
+  }
+  const answer = await ask(
+    `\n  ${yellow("approve")} ${pending.tool.name} ${dim(JSON.stringify(pending.args))} ? [y/N] `,
+  );
+  return /^y(es)?$/i.test(answer.trim()) ? "approve" : "deny";
+}
+
 function reportSession(host: Host): void {
   console.log(dim(`\n  session ${host.threadId}`));
   console.log(dim(`  store       ${storeKind} · ${store.describe()}`));
+  console.log(dim(`  workspace   ${host.cwd}`));
   console.log(dim(`  events      ${host.tracePath}`));
   console.log(
     dim(`  continue    pnpm dev run "<task>" --resume ${host.threadId}`) +
@@ -285,7 +384,7 @@ async function runLive(
 ): Promise<void> {
   const provider = openAIProviderFromEnv();
   console.log(dim(`provider ${provider.id} · scenario ${scenario.id} (${scenario.tools.length} tools)`));
-  const host = await openHost(resumeId, provider.id, scenario);
+  const host = await openHost(resumeId, provider.id, scenario, options.worktree === true);
   const result = await runOneTurn(host, task, options);
 
   if (result.reason === "awaiting_approval") {
@@ -305,7 +404,7 @@ async function runChat(
 ): Promise<void> {
   const provider = openAIProviderFromEnv();
   console.log(dim(`provider ${provider.id} · scenario ${scenario.id} (${scenario.tools.length} tools)`));
-  const host = await openHost(resumeId, provider.id, scenario);
+  const host = await openHost(resumeId, provider.id, scenario, options.worktree === true);
   if (host.messages.length > 0) {
     console.log(dim(`resumed ${host.messages.length} messages from ${host.threadId}`));
   }
@@ -448,6 +547,42 @@ async function showItems(threadId: string | undefined): Promise<void> {
   }
 }
 
+async function showAudit(threadId: string | undefined): Promise<void> {
+  const entries = await auditLog.read({
+    ...(threadId !== undefined ? { threadId } : {}),
+    limit: 25,
+  });
+
+  if (entries.length === 0) {
+    console.log(dim("no audit entries yet — run a live turn first"));
+    return;
+  }
+
+  const rows = entries.map((entry) => [
+    new Date(entry.ts).toISOString().slice(11, 19),
+    entry.threadId.slice(7, 19),
+    entry.kind,
+    entry.tool ?? entry.reason ?? "",
+    entry.decision ?? (entry.ok === undefined ? "" : entry.ok ? "ok" : "fail"),
+    entry.tokens !== undefined
+      ? `${entry.tokens.input}/${entry.tokens.output}`
+      : entry.durationMs !== undefined
+        ? `${entry.durationMs}ms`
+        : "",
+  ]);
+  const header = ["time", "thread", "kind", "what", "decision", "cost"];
+  const widths = header.map((cell, index) =>
+    Math.max(cell.length, ...rows.map((row) => (row[index] ?? "").length)),
+  );
+  const line = (cells: readonly string[]): string =>
+    cells.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ");
+
+  console.log(line(header));
+  console.log(widths.map((width) => "-".repeat(width)).join("  "));
+  for (const row of rows) console.log(line(row));
+  console.log(dim(`\nfile: ${auditLog.file}${threadId === undefined ? "" : ` · thread ${threadId}`}`));
+}
+
 async function replay(file: string | undefined): Promise<void> {
   if (file === undefined) {
     console.error(red("usage: replay <file.events.ndjson>"));
@@ -502,11 +637,13 @@ function usage(): void {
       "  eval [--live]                              score fixtures (scripted or live)",
       "  sessions                                   list recorded sessions",
       "  items <thread>                             print the Thread/Turn/Item view",
+      "  audit [thread]                             what ran, where, approved or not",
       "  replay <file.events.ndjson>                re-print a recorded event stream",
       "",
       "  --store jsonl|sqlite   where sessions live (default jsonl; sqlite is opt-in until the UI needs queries)",
       "  --scenario media|coding  which tool set + policy to ship (default media: 7 tools instead of 13)",
       "  --summarize [--summarize-at <tokens>]  compress old turns into a summary when the request is large (default 24k)",
+      "  --worktree             run in an isolated git worktree (runs/worktrees/<thread>)",
       "",
       "Every live turn writes an event trace to runs/sessions/<thread>.events.ndjson.",
       "Sessions live in runs/sessions/ (jsonl) or runs/sessions/sessions.db (sqlite). Both are gitignored.",
@@ -613,6 +750,7 @@ async function main(): Promise<void> {
   const options: TurnOptions = {
     autoApprove: flags.includes("--yes"),
     summarize: flags.includes("--summarize"),
+    worktree: flags.includes("--worktree"),
     ...(parsed.summarizeAt !== undefined ? { summarizeAt: parsed.summarizeAt } : {}),
     ...(parsed.maxSteps !== undefined ? { maxSteps: parsed.maxSteps } : {}),
   };
@@ -658,6 +796,11 @@ async function main(): Promise<void> {
 
   if (command === "items") {
     await showItems(positional[0]);
+    return;
+  }
+
+  if (command === "audit") {
+    await showAudit(positional[0]);
     return;
   }
 

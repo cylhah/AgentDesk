@@ -50,6 +50,13 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     risk: RiskLevelSchema,
   }),
   z.object({
+    type: z.literal("tool.approval_resolved"),
+    ...base,
+    callId: z.string(),
+    name: z.string(),
+    decision: z.enum(["approve", "deny"]),
+  }),
+  z.object({
     type: z.literal("usage"),
     ...base,
     inputTokens: z.number().int().nonnegative(),
