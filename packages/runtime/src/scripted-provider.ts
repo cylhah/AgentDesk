@@ -15,6 +15,7 @@ export class ScriptedProvider implements ModelProvider {
     this.queue = turns.map((turn) => ({
       text: turn.text,
       toolCalls: [...turn.toolCalls],
+      ...(turn.usage !== undefined ? { usage: turn.usage } : {}),
     }));
   }
 

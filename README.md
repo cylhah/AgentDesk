@@ -18,7 +18,7 @@ pnpm install
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 43 个单元测试
+pnpm test                                  # 61 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
@@ -29,8 +29,11 @@ export OPENAI_MODEL=deepseek-chat                    # 可选
 pnpm dev run "放周杰伦的晴天"                # 单轮；结束会打印 session id
 pnpm dev chat                              # 多轮；每轮自动落盘
 pnpm dev sessions                          # 列出已记录的会话
+pnpm dev items <thread>                    # Thread/Turn/Item 投影
 pnpm dev replay runs/sessions/<id>.events.ndjson    # 回放事件流
 pnpm dev eval --live                       # 用真实模型跑夹具，会花钱
+
+# 以上都可加 --store sqlite，落 runs/sessions/sessions.db
 ```
 
 预期输出（demo，节选）：
@@ -84,37 +87,44 @@ docs/        ADR、harness 拆解问题清单、路线图
 
 ## 真实模型 baseline
 
-`deepseek-chat`（`https://api.deepseek.com/v1`），2026-10-21 首次 live eval：
+`deepseek-chat`（`https://api.deepseek.com/v1`），2026-10-23 口径：**token 数来自端点返回的 `usage`**，不是估算。
 
-| case | result | steps | tokens | calls |
+| case | result | steps | input+output tokens | calls |
 |---|---|---|---|---|
-| media-01 | PASS | 2 | 46 | search_media > play |
-| media-02 | PASS | 2 | 162 | search_media > play |
-| media-03 | PASS | 3 | 228 | search_media > play > next |
-| media-04 | PASS | 0 | 3 | — （`awaiting_approval`，工具未执行） |
-| media-05 | PASS | 0 | 10 | — （域外请求，不调工具） |
+| media-01 | PASS | 2 | 5526 | search_media > play |
+| media-02 | PASS | 2 | 5633 | search_media > play |
+| media-03 | PASS | 3 | 9402 | search_media > play > next |
+| media-04 | PASS | 0 | 1763 | — （`awaiting_approval`，工具未执行） |
+| media-05 | PASS | 0 | 1746 | — （域外请求，不调工具） |
 
-**5/5，连跑 3 次稳定**。但注意这个数字的口径：它测的是「策略 + 工具 + loop + 模型」的组合，不是模型单体。同一个模型在没有 [mediaSystemPrompt](./packages/tools/src/media.policy.ts) 时是 3/5——会列歌单而不播放，会自己在文本里问「要打开车窗吗」而不是调工具。
+**5/5**。两个口径必须一起看：
+
+- 这个分数测的是「策略 + 工具 + loop + 模型」的组合，不是模型单体。同一个模型没有 [mediaSystemPrompt](./packages/tools/src/media.policy.ts) 时是 3/5——会列歌单而不播放，会自己在文本里问「要打开车窗吗」。
+- **一次请求 ≈ 1.7k input tokens**，其中绝大部分是 13 个工具的 JSON Schema + 策略文本，不是对话内容。每多一步骤就重发一次，所以 3 步的 media-03 要 9.4k。早期显示的 `in=46` 是按字符数估的，漏掉了 tools 和 system——差了两个数量级。
 
 ## 会话与回放
 
-每次真实模型调用会写两个文件（`runs/` 已 gitignore）：
+真实调用会写两份记录（`runs/` 已 gitignore），存储有两种实现，同一个 `SessionStore` 契约：
 
 ```
-runs/sessions/<thread>.jsonl          落盘会话：header + 每条消息 + 每轮 usage
+runs/sessions/<thread>.jsonl          jsonl：header + 每条消息 + 每轮 usage（默认，可 grep）
+runs/sessions/sessions.db             sqlite：sessions/messages/turns 三张表（--store sqlite）
 runs/sessions/<thread>.events.ndjson  事件流：AgentEvent 逐条，可 replay
 ```
 
 - **header 里存了当时的 system prompt**。策略改了以后续跑老会话，仍然用当时那份策略——否则就是换了个实验条件去比分数。
 - **`--resume <thread>`** 接着上一轮跑；`chat` 里连续多轮共享同一个 thread。
-- **崩溃安全**：NDJSON 逐行追加，坏行跳过并计数，不会因为最后一行写坏丢掉整个会话。
+- **崩溃安全**：NDJSON 逐行追加，坏行跳过并计数；SQLite 用事务边界保证一行一条记录。
 - **上下文预算**：每次请求前做三级压缩——旧工具结果截断 → 旧的置为 `[elided]` → 整轮丢弃（保证 tool call 与 result 同生共死）。**历史本身不删**，磁盘上永远完整，只有发给模型的请求窗口会缩小。
+- **`items <thread>`** 打印 Thread/Turn/Item 投影：一条带两个 tool call 的 assistant 消息会变成三条 item——这是 UI 要渲染的形状，从消息派生而不是另存一份。
 
 ## 待办（Week 3）
 
-- [ ] `Thread/Turn/Item` 落 SQLite（`store` 接口已留好，换实现即可）
+- [x] `Thread/Turn/Item` 落 SQLite（两套实现 + 同一套 contract 测试）
+- [x] 真实 token 计数（`usage` 事件带 `source: api | estimate`）
 - [ ] 压缩从"确定性裁剪"升级为"摘要 + 裁剪"混合
 - [ ] 压缩前后对比数据（成功率、token、延迟）
+- [ ] 工具子集：按场景只下发相关工具，砍掉一半 prompt 开销
 - [ ] 审批恢复：`awaiting_approval` 之后能继续，而不是让宿主重跑
 - [ ] 流式输出（UI 阶段再补）
 

@@ -134,6 +134,47 @@ describe("runTurn", () => {
     expect(result.messages.some((message) => message.content === bigResult)).toBe(true);
   });
 
+  it("reports the endpoint's token usage instead of estimating from characters", async () => {
+    const provider = new ScriptedProvider([
+      { text: "好", toolCalls: [], usage: { inputTokens: 9, outputTokens: 1 } },
+    ]);
+
+    const events: AgentEvent[] = [];
+    const result = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("hi"),
+      provider,
+      tools,
+      onEvent: (event) => events.push(event),
+    });
+
+    // "hi" estimates to 1 token and the reply to 1; the endpoint says 9 / 1.
+    expect(result.usage.inputTokens).toBe(9);
+    expect(result.usage.outputTokens).toBe(1);
+    expect(events.find((event) => event.type === "usage")).toMatchObject({
+      type: "usage",
+      source: "api",
+    });
+  });
+
+  it("falls back to estimates when the provider reports no usage", async () => {
+    const provider = new ScriptedProvider([{ text: "好", toolCalls: [] }]);
+
+    const events: AgentEvent[] = [];
+    await runTurn({
+      threadId: "thread_1",
+      messages: userSays("hi"),
+      provider,
+      tools,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events.find((event) => event.type === "usage")).toMatchObject({
+      type: "usage",
+      source: "estimate",
+    });
+  });
+
   it("stops at maxSteps when the model never stops calling tools", async () => {
     const provider: ModelProvider = {
       id: "always-calls",

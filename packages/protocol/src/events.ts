@@ -55,6 +55,8 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     inputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
     costUsd: z.number().nonnegative().optional(),
+    /** "api" = reported by the endpoint; "estimate" = chars/4 fallback (scripted providers, older endpoints). */
+    source: z.enum(["api", "estimate"]).optional(),
   }),
   z.object({
     type: z.literal("context.compacted"),

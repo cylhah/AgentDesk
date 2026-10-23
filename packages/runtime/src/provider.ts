@@ -10,6 +10,17 @@ export interface CompletionRequest {
 export interface AssistantTurn {
   readonly text: string;
   readonly toolCalls: readonly ToolCall[];
+  /**
+   * Real token accounting for *this request*, when the endpoint reports it.
+   * The loop prefers this over `estimateTokens` — otherwise every number in the
+   * eval table (and cost later) is a guess derived from character counts.
+   */
+  readonly usage?: ModelUsage;
+}
+
+export interface ModelUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
 }
 
 /**

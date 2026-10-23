@@ -60,3 +60,31 @@ export interface SessionSummary {
   readonly provider: string;
   readonly firstUserText: string;
 }
+
+export interface CreateSessionInput {
+  readonly threadId: string;
+  readonly cwd: string;
+  readonly provider: string;
+  readonly system?: string;
+  readonly now?: number;
+}
+
+/**
+ * The seam between "how a session is stored" and everything else.
+ *
+ * Two implementations exist on purpose (NDJSON, SQLite) and share one contract
+ * test, so swapping storage cannot silently change what `resume` sees.
+ */
+export interface SessionStore {
+  create(input: CreateSessionInput): Promise<SessionHeader>;
+  appendMessage(threadId: string, turnId: string, message: Message): Promise<void>;
+  appendTurn(
+    threadId: string,
+    turn: { turnId: string; reason: TurnEndReason; usage: TurnUsage },
+  ): Promise<void>;
+  load(threadId: string): Promise<LoadedSession>;
+  list(): Promise<SessionSummary[]>;
+  /** Human-readable location, printed by the CLI (`sessions`/`run`). */
+  describe(): string;
+  close(): void;
+}

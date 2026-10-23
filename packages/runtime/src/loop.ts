@@ -77,6 +77,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   let inputTokens = 0;
   let outputTokens = 0;
   let steps = 0;
+  let usedEstimate = false;
   let reason: TurnEndReason = "max_steps";
   let pendingApproval: ApprovalRequest | undefined;
 
@@ -112,11 +113,20 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       ...(input.system !== undefined ? { system: input.system } : {}),
     });
 
-    inputTokens += messages.reduce(
-      (sum, message) => sum + estimateTokens(message.content),
-      0,
-    );
-    outputTokens += estimateTokens(turn.text);
+    // Prefer the endpoint's own numbers: each request repays for the whole
+    // prompt, so summing per-step usage is the actual bill, while the estimate
+    // is only a stand-in for scripted providers and endpoints that omit usage.
+    if (turn.usage !== undefined) {
+      inputTokens += turn.usage.inputTokens;
+      outputTokens += turn.usage.outputTokens;
+    } else {
+      usedEstimate = true;
+      inputTokens += messages.reduce(
+        (sum, message) => sum + estimateTokens(message.content),
+        0,
+      );
+      outputTokens += estimateTokens(turn.text);
+    }
 
     if (turn.text.length > 0) {
       emit({ type: "message.delta", turnId, text: turn.text, ts: now() });
@@ -276,7 +286,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     }
   }
 
-  emit({ type: "usage", turnId, inputTokens, outputTokens, ts: now() });
+  const tokenSource = usedEstimate ? "estimate" : "api";
+  emit({ type: "usage", turnId, inputTokens, outputTokens, source: tokenSource, ts: now() });
   emit({ type: "turn.end", turnId, reason, ts: now() });
 
   return {

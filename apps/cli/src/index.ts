@@ -15,11 +15,14 @@ import {
   type ApprovalRequest,
   type RunTurnResult,
 } from "@agentdesk/runtime";
-import { JsonlSessionStore } from "@agentdesk/store";
+import { JsonlSessionStore, SqliteSessionStore, deriveItems, type SessionStore } from "@agentdesk/store";
 import { createAllTools, mediaSystemPrompt } from "@agentdesk/tools";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
-const store = new JsonlSessionStore(resolve(process.cwd(), "runs/sessions"));
+const RUN_DIR = resolve(process.cwd(), "runs/sessions");
+// Chosen in main() from `--store`; both satisfy SessionStore.
+let store: SessionStore = new JsonlSessionStore(RUN_DIR);
+let storeKind: "jsonl" | "sqlite" = "jsonl";
 const useColor = process.stdout.isTTY === true;
 
 const paint = (code: string, text: string): string =>
@@ -91,7 +94,12 @@ function printEvent(event: AgentEvent): void {
       console.log(`  ${red("! error")} ${event.message}`);
       break;
     case "usage":
-      console.log(dim(`  usage: in=${event.inputTokens} out=${event.outputTokens}`));
+      console.log(
+        dim(
+          `  usage: in=${event.inputTokens} out=${event.outputTokens}` +
+            (event.source === undefined ? "" : ` (${event.source})`),
+        ),
+      );
       break;
     case "turn.end":
       console.log(dim(`  ⏹ ${event.reason}`));
@@ -134,7 +142,7 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
       messages: [...loaded.messages],
       // Replay the policy the session was recorded with, not today's default.
       system: loaded.header.system ?? mediaSystemPrompt,
-      tracePath: join(store.root, `${resumeId}.events.ndjson`),
+      tracePath: join(RUN_DIR, `${resumeId}.events.ndjson`),
     };
   }
 
@@ -149,7 +157,7 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
     threadId,
     messages: [],
     system: mediaSystemPrompt,
-    tracePath: join(store.root, `${threadId}.events.ndjson`),
+    tracePath: join(RUN_DIR, `${threadId}.events.ndjson`),
   };
 }
 
@@ -213,7 +221,7 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
 
 function reportSession(host: Host): void {
   console.log(dim(`\n  session ${host.threadId}`));
-  console.log(dim(`  conversation ${join(store.root, `${host.threadId}.jsonl`)}`));
+  console.log(dim(`  store       ${storeKind} · ${store.describe()}`));
   console.log(dim(`  events      ${host.tracePath}`));
   console.log(
     dim(`  continue    pnpm dev run "<task>" --resume ${host.threadId}`) +
@@ -345,7 +353,42 @@ async function listSessions(): Promise<void> {
   console.log(line(header));
   console.log(widths.map((width) => "-".repeat(width)).join("  "));
   for (const row of rows) console.log(line(row));
-  console.log(dim(`\nresume one with: pnpm dev chat --resume <thread>`));
+  console.log(dim(`\nstore: ${storeKind} · ${store.describe()}`));
+  console.log(dim(`resume one with: pnpm dev chat --resume <thread>`));
+}
+
+/**
+ * Prints the Thread/Turn/Item projection of a stored session. The messages are
+ * the truth; this view is what a UI would page over — one assistant message
+ * with two tool calls becomes three items.
+ */
+async function showItems(threadId: string | undefined): Promise<void> {
+  if (threadId === undefined) {
+    console.error(red("usage: items <thread>"));
+    process.exitCode = 1;
+    return;
+  }
+
+  const loaded = await store.load(threadId);
+  const items = deriveItems(loaded.messages);
+
+  console.log(dim(`thread ${threadId} · ${items.length} items · policy: ${loaded.header.system === undefined ? "(none)" : "recorded"}`));
+  for (const item of items) {
+    switch (item.kind) {
+      case "user_message":
+        console.log(`${green("user")}  ${item.text}`);
+        break;
+      case "assistant_message":
+        console.log(`${cyan("asst")}  ${item.text}`);
+        break;
+      case "tool_call":
+        console.log(`${yellow("call")}  ${item.call.name} ${dim(JSON.stringify(item.call.args))}`);
+        break;
+      case "tool_result":
+        console.log(`${item.ok ? green("res") : red("res")}   ${item.callId} ${dim(item.output.slice(0, 120))}`);
+        break;
+    }
+  }
 }
 
 async function replay(file: string | undefined): Promise<void> {
@@ -401,10 +444,13 @@ function usage(): void {
       "  demo [caseId]                              replay a fixture through the real loop",
       "  eval [--live]                              score fixtures (scripted or live)",
       "  sessions                                   list recorded sessions",
+      "  items <thread>                             print the Thread/Turn/Item view",
       "  replay <file.events.ndjson>                re-print a recorded event stream",
       "",
-      "Every live turn writes runs/sessions/<thread>.jsonl (messages) and",
-      "runs/sessions/<thread>.events.ndjson (events). Session files are gitignored.",
+      "  --store jsonl|sqlite   where sessions live (default jsonl; sqlite is opt-in until the UI needs queries)",
+      "",
+      "Every live turn writes an event trace to runs/sessions/<thread>.events.ndjson.",
+      "Sessions live in runs/sessions/ (jsonl) or runs/sessions/sessions.db (sqlite). Both are gitignored.",
       "",
       "Env: OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL (any OpenAI-compatible endpoint).",
     ].join("\n"),
@@ -415,11 +461,12 @@ interface ParsedArgs {
   readonly flags: readonly string[];
   readonly positional: readonly string[];
   readonly resume?: string;
+  readonly store?: string;
   readonly maxSteps?: number;
 }
 
 /**
- * Hand-rolled parsing because the CLI has exactly two value-taking flags.
+ * Hand-rolled parsing because the CLI has three value-taking flags.
  * `--resume <id>` must consume its value, otherwise the id would be joined into
  * the task string (`run "放晴天" --resume thread_x` → task "放晴天 thread_x").
  */
@@ -427,6 +474,7 @@ function parseArgs(args: readonly string[]): ParsedArgs {
   const flags: string[] = [];
   const positional: string[] = [];
   let resume: string | undefined;
+  let storeKindArg: string | undefined;
   let maxSteps: number | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -438,6 +486,15 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     }
     if (arg.startsWith("--resume=")) {
       resume = arg.slice("--resume=".length);
+      continue;
+    }
+    if (arg === "--store") {
+      storeKindArg = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--store=")) {
+      storeKindArg = arg.slice("--store=".length);
       continue;
     }
     if (arg === "--max-steps") {
@@ -460,6 +517,7 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     flags,
     positional,
     ...(resume !== undefined ? { resume } : {}),
+    ...(storeKindArg !== undefined ? { store: storeKindArg } : {}),
     ...(maxSteps !== undefined && Number.isFinite(maxSteps) ? { maxSteps } : {}),
   };
 }
@@ -473,6 +531,14 @@ async function main(): Promise<void> {
     autoApprove: flags.includes("--yes"),
     ...(parsed.maxSteps !== undefined ? { maxSteps: parsed.maxSteps } : {}),
   };
+
+  if (parsed.store !== undefined && parsed.store !== "jsonl" && parsed.store !== "sqlite") {
+    console.error(red(`unknown store: ${parsed.store} (expected jsonl or sqlite)`));
+    process.exitCode = 1;
+    return;
+  }
+  storeKind = parsed.store === "sqlite" ? "sqlite" : "jsonl";
+  store = storeKind === "sqlite" ? new SqliteSessionStore(join(RUN_DIR, "sessions.db")) : new JsonlSessionStore(RUN_DIR);
 
   if (command === "run") {
     if (flags.includes("--mock")) {
@@ -504,6 +570,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "items") {
+    await showItems(positional[0]);
+    return;
+  }
+
   if (command === "replay") {
     await replay(positional[0]);
     return;
@@ -525,4 +596,5 @@ try {
   process.exitCode = 1;
 } finally {
   closePrompt();
+  store.close();
 }

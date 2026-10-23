@@ -137,7 +137,19 @@ export class OpenAIProvider implements ModelProvider {
       args: parseArgs(call.function.arguments),
     }));
 
-    return { text, toolCalls };
+    const usage = payload.usage;
+    return {
+      text,
+      toolCalls,
+      ...(usage?.prompt_tokens !== undefined && usage.completion_tokens !== undefined
+        ? {
+            usage: {
+              inputTokens: usage.prompt_tokens,
+              outputTokens: usage.completion_tokens,
+            },
+          }
+        : {}),
+    };
   }
 
   private async request<T>(path: string, body: unknown): Promise<T> {

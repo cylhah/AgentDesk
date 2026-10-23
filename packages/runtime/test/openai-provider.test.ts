@@ -76,6 +76,29 @@ describe("OpenAIProvider", () => {
     expect(seen[0]?.body.tool_choice).toBe("auto");
   });
 
+  it("keeps the real token usage reported by the endpoint", async () => {
+    const fakeFetch = (async () =>
+      ok({
+        choices: [{ message: { content: "好" } }],
+        usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10 },
+      })) as unknown as typeof fetch;
+
+    const provider = new OpenAIProvider({ apiKey: "test", model: "m", fetchImpl: fakeFetch });
+    const turn = await provider.complete({ messages: [{ role: "user", content: "hi" }], tools: [] });
+
+    expect(turn.usage).toEqual({ inputTokens: 9, outputTokens: 1 });
+  });
+
+  it("omits usage when the endpoint does not report it", async () => {
+    const fakeFetch = (async () =>
+      ok({ choices: [{ message: { content: "好" } }] })) as unknown as typeof fetch;
+
+    const provider = new OpenAIProvider({ apiKey: "test", model: "m", fetchImpl: fakeFetch });
+    const turn = await provider.complete({ messages: [{ role: "user", content: "hi" }], tools: [] });
+
+    expect(turn.usage).toBeUndefined();
+  });
+
   it("retries on 5xx and succeeds on the next attempt", async () => {
     let attempts = 0;
     const fakeFetch = (async () => {

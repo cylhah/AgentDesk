@@ -2,9 +2,11 @@ import { appendFile, mkdir, open, readFile, readdir, stat } from "node:fs/promis
 import { join, resolve } from "node:path";
 import type { Message, TurnEndReason } from "@agentdesk/protocol";
 import type {
+  CreateSessionInput,
   LoadedSession,
   SessionHeader,
   SessionLine,
+  SessionStore,
   SessionSummary,
   StoredMessage,
   StoredTurn,
@@ -13,23 +15,14 @@ import type {
 
 const THREAD_ID = /^[a-zA-Z0-9_-]{1,64}$/;
 
-export interface CreateSessionInput {
-  readonly threadId: string;
-  readonly cwd: string;
-  readonly provider: string;
-  readonly system?: string;
-  readonly now?: number;
-}
-
 /**
  * Append-only NDJSON session log, one file per thread.
  *
- * Why NDJSON before SQLite: it is greppable, append-only and crash-tolerant
- * (a torn last line loses one message, not the session). The interface is
- * deliberately narrow so `SqliteSessionStore` can replace it in Week 3 without
- * touching the runtime or the CLI.
+ * Why NDJSON stays around after SQLite lands: it is greppable, append-only and
+ * crash-tolerant (a torn last line loses one message, not the session). Both
+ * implementations satisfy `SessionStore`, so `resume` behaves identically.
  */
-export class JsonlSessionStore {
+export class JsonlSessionStore implements SessionStore {
   readonly root: string;
 
   constructor(root = resolve(process.cwd(), "runs/sessions")) {
@@ -41,6 +34,13 @@ export class JsonlSessionStore {
       throw new Error(`invalid threadId: ${JSON.stringify(threadId)}`);
     }
     return join(this.root, `${threadId}.jsonl`);
+  }
+
+  /** No-op: the OS owns the file handle here; kept so both stores share a signature. */
+  close(): void {}
+
+  describe(): string {
+    return this.root;
   }
 
   async create(input: CreateSessionInput): Promise<SessionHeader> {
