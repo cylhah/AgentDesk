@@ -6,6 +6,7 @@ import {
   newId,
   type AgentEvent,
   type Message,
+  type ToolDef,
 } from "@agentdesk/protocol";
 import { formatTable, runCase, type EvalCase } from "@agentdesk/eval";
 import {
@@ -132,9 +133,18 @@ interface Host {
   messages: Message[];
   readonly system: string;
   readonly tracePath: string;
+  /**
+   * Tools are created once per session, not per turn: the media mock carries
+   * state (`nowPlaying`, volume, window) that `next`/`pause` depend on. Creating
+   * them per turn made "换一首" fail with "nothing is playing" one turn after a
+   * successful play — the state had been silently reset.
+   */
+  readonly tools: readonly ToolDef[];
 }
 
 async function openHost(resumeId: string | undefined, providerId: string): Promise<Host> {
+  const tools = createAllTools();
+
   if (resumeId !== undefined) {
     const loaded = await store.load(resumeId);
     return {
@@ -143,6 +153,7 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
       // Replay the policy the session was recorded with, not today's default.
       system: loaded.header.system ?? mediaSystemPrompt,
       tracePath: join(RUN_DIR, `${resumeId}.events.ndjson`),
+      tools,
     };
   }
 
@@ -158,6 +169,7 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
     messages: [],
     system: mediaSystemPrompt,
     tracePath: join(RUN_DIR, `${threadId}.events.ndjson`),
+    tools,
   };
 }
 
@@ -186,7 +198,7 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
     turnId,
     messages: host.messages,
     provider,
-    tools: createAllTools(),
+    tools: host.tools,
     system: host.system,
     cwd: process.cwd(),
     approval: makeApproval(options.autoApprove),

@@ -114,4 +114,23 @@ describe("tool catalog", () => {
       expect(TOOL_NAME_PATTERN.test(tool.name), `illegal tool name: ${tool.name}`).toBe(true);
     }
   });
+
+  it("keeps player state when the same tool set is reused across turns", async () => {
+    // The CLI used to call createAllTools() once per turn, which silently reset
+    // `nowPlaying` — so "换一首" one turn after a successful play answered
+    // "nothing is playing". The tool set must live as long as the session.
+    const tools = createAllTools();
+    const play = tools.find((tool) => tool.name === "play");
+    const next = tools.find((tool) => tool.name === "next");
+    expect(play).toBeDefined();
+    expect(next).toBeDefined();
+
+    const ctx = { threadId: "thread_1", turnId: "turn_1", cwd: dir };
+    const played = await play?.run({ trackId: "t-001" }, ctx);
+    expect(played?.output).toContain("晴天");
+
+    const skipped = await next?.run({}, ctx);
+    expect(skipped?.ok).toBe(true);
+    expect(skipped?.output).toContain("七里香");
+  });
 });
