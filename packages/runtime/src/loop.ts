@@ -10,6 +10,10 @@ import {
 } from "@agentdesk/protocol";
 import type { ModelProvider } from "./provider";
 import { compactMessages, type CompactionOptions } from "./context";
+import { splitForSummary, summaryMessage, type Summarizer } from "./summarize";
+
+const DEFAULT_SUMMARIZE_AT_TOKENS = 24_000;
+const DEFAULT_SUMMARIZE_KEEP_TURNS = 4;
 
 export interface ApprovalRequest {
   readonly tool: ToolDef;
@@ -33,6 +37,18 @@ export interface RunTurnInput {
   readonly tokenBudget?: number;
   /** Per-request context window handling. The full history is still kept in memory/on disk. */
   readonly context?: CompactionOptions;
+  /**
+   * Optional semantic compression. When provided and the request exceeds
+   * `atTokens`, older turns are replaced by one summary paragraph for the
+   * request only — the recorded history stays intact.
+   */
+  readonly summarizer?: Summarizer;
+  readonly summarizeAt?: {
+    readonly atTokens?: number;
+    readonly keepRecentTurns?: number;
+  };
+  /** Summary carried over from a previous turn — recomputing it costs a full extra request. */
+  readonly priorSummary?: { readonly text: string; readonly frontier: number };
   readonly approval?: ApprovalFn;
   readonly onEvent?: (event: AgentEvent) => void;
   readonly cwd?: string;
@@ -52,6 +68,8 @@ export interface RunTurnResult {
   readonly messages: readonly Message[];
   readonly usage: TokenUsage;
   readonly pendingApproval?: ApprovalRequest;
+  /** New or refreshed summary of the head of the conversation — persist it, or pay again next turn. */
+  readonly summary?: { readonly text: string; readonly frontier: number };
 }
 
 const DEFAULT_MAX_STEPS = 24;
@@ -80,6 +98,11 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   let usedEstimate = false;
   let reason: TurnEndReason = "max_steps";
   let pendingApproval: ApprovalRequest | undefined;
+  /** Summarised head of the conversation; reused from the previous turn when available. */
+  let summary: { text: string; frontier: number } | undefined =
+    input.priorSummary !== undefined && input.priorSummary.frontier <= messages.length
+      ? { text: input.priorSummary.text, frontier: input.priorSummary.frontier }
+      : undefined;
 
   emit({ type: "turn.start", turnId, ts: now() });
 
@@ -93,7 +116,55 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       break;
     }
 
-    const compacted = compactMessages(messages, input.context ?? {});
+    if (input.summarizer !== undefined) {
+      const atTokens = input.summarizeAt?.atTokens ?? DEFAULT_SUMMARIZE_AT_TOKENS;
+      // Only the *uncovered* tail matters: a stored summary already stands in
+      // for everything before its frontier.
+      const tailFrom = summary === undefined ? 0 : summary.frontier;
+      const tailTokens = messages
+        .slice(tailFrom)
+        .reduce((sum, message) => sum + estimateTokens(message.content), 0);
+      if (tailTokens > atTokens) {
+        const keepRecentTurns =
+          input.summarizeAt?.keepRecentTurns ?? DEFAULT_SUMMARIZE_KEEP_TURNS;
+        const { head, tail } = splitForSummary(messages, keepRecentTurns);
+        const alreadyCovered = summary?.frontier ?? 0;
+        if (head.length > alreadyCovered) {
+          const summarized = await input.summarizer(head);
+          summary = { text: summarized.text, frontier: head.length };
+          // The summary is a paid request too — account for it before emitting.
+          if (summarized.usage !== undefined) {
+            inputTokens += summarized.usage.inputTokens;
+            outputTokens += summarized.usage.outputTokens;
+          } else {
+            usedEstimate = true;
+            inputTokens += head.reduce(
+              (sum, message) => sum + estimateTokens(message.content),
+              0,
+            );
+            outputTokens += estimateTokens(summarized.text);
+          }
+          emit({
+            type: "context.summarized",
+            turnId,
+            ts: now(),
+            tokensBefore: tailTokens,
+            tokensAfter:
+              estimateTokens(summarized.text) +
+              tail.reduce((sum, message) => sum + estimateTokens(message.content), 0),
+            summarizedMessages: head.length,
+            keptMessages: tail.length,
+          });
+        }
+      }
+    }
+
+    const requestMessages: readonly Message[] =
+      summary === undefined
+        ? messages
+        : [summaryMessage(summary.text), ...messages.slice(summary.frontier)];
+
+    const compacted = compactMessages(requestMessages, input.context ?? {});
     if (compacted.report.changed) {
       emit({
         type: "context.compacted",
@@ -296,5 +367,6 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     messages,
     usage: { inputTokens, outputTokens, steps },
     ...(pendingApproval !== undefined ? { pendingApproval } : {}),
+    ...(summary !== undefined ? { summary } : {}),
   };
 }

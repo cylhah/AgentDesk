@@ -41,14 +41,34 @@ export interface StoredTurn {
   readonly usage: TurnUsage;
 }
 
-export type SessionLine = SessionHeader | StoredMessage | StoredTurn;
+export interface StoredSummaryLine {
+  readonly v: 1;
+  readonly type: "summary";
+  readonly ts: number;
+  readonly text: string;
+  readonly frontier: number;
+}
+
+export type SessionLine = SessionHeader | StoredMessage | StoredTurn | StoredSummaryLine;
 
 export interface LoadedSession {
   readonly header: SessionHeader;
   readonly messages: readonly Message[];
   readonly turns: readonly StoredTurn[];
+  /** Latest semantic summary of the head of the conversation, if one was saved. */
+  readonly summary?: StoredSummary;
   /** Lines that failed to parse — tolerated so one bad write cannot lose a session. */
   readonly skippedLines: number;
+}
+
+/**
+ * A summary replaces `messages[0..frontier]` in requests only.
+ * Stored because recomputing it every turn costs a full extra request.
+ */
+export interface StoredSummary {
+  readonly text: string;
+  /** Number of messages covered; the log is append-only, so this index stays valid. */
+  readonly frontier: number;
 }
 
 export interface SessionSummary {
@@ -83,6 +103,8 @@ export interface SessionStore {
     turn: { turnId: string; reason: TurnEndReason; usage: TurnUsage },
   ): Promise<void>;
   load(threadId: string): Promise<LoadedSession>;
+  /** Replaces any previous summary for the thread. */
+  saveSummary(threadId: string, summary: StoredSummary): Promise<void>;
   list(): Promise<SessionSummary[]>;
   /** Human-readable location, printed by the CLI (`sessions`/`run`). */
   describe(): string;

@@ -10,6 +10,7 @@ import {
 } from "@agentdesk/protocol";
 import { formatTable, runCase, type EvalCase } from "@agentdesk/eval";
 import {
+  makeProviderSummarizer,
   openAIProviderFromEnv,
   runTurn,
   ScriptedProvider,
@@ -17,7 +18,7 @@ import {
   type RunTurnResult,
 } from "@agentdesk/runtime";
 import { JsonlSessionStore, SqliteSessionStore, deriveItems, type SessionStore } from "@agentdesk/store";
-import { createAllTools, mediaSystemPrompt } from "@agentdesk/tools";
+import { mediaScenario, resolveScenario, type Scenario } from "@agentdesk/tools";
 
 const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
 const RUN_DIR = resolve(process.cwd(), "runs/sessions");
@@ -83,6 +84,14 @@ function printEvent(event: AgentEvent): void {
         `  ${red("⏸ approval required")} ${event.name} ${dim(JSON.stringify(event.args))}`,
       );
       break;
+    case "context.summarized":
+      console.log(
+        dim(
+          `  ⇣ summarized ${event.summarizedMessages} old messages → ${event.tokensBefore} → ${event.tokensAfter} tokens` +
+            ` (kept ${event.keptMessages})`,
+        ),
+      );
+      break;
     case "context.compacted":
       console.log(
         dim(
@@ -140,10 +149,16 @@ interface Host {
    * successful play — the state had been silently reset.
    */
   readonly tools: readonly ToolDef[];
+  /** Persisted semantic summary of the head of the conversation, if any. */
+  summary?: { readonly text: string; readonly frontier: number };
 }
 
-async function openHost(resumeId: string | undefined, providerId: string): Promise<Host> {
-  const tools = createAllTools();
+async function openHost(
+  resumeId: string | undefined,
+  providerId: string,
+  scenario: Scenario,
+): Promise<Host> {
+  const tools = scenario.tools;
 
   if (resumeId !== undefined) {
     const loaded = await store.load(resumeId);
@@ -151,9 +166,10 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
       threadId: resumeId,
       messages: [...loaded.messages],
       // Replay the policy the session was recorded with, not today's default.
-      system: loaded.header.system ?? mediaSystemPrompt,
+      system: loaded.header.system ?? scenario.systemPrompt,
       tracePath: join(RUN_DIR, `${resumeId}.events.ndjson`),
       tools,
+      ...(loaded.summary !== undefined ? { summary: loaded.summary } : {}),
     };
   }
 
@@ -162,12 +178,12 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
     threadId,
     cwd: process.cwd(),
     provider: providerId,
-    system: mediaSystemPrompt,
+    system: scenario.systemPrompt,
   });
   return {
     threadId,
     messages: [],
-    system: mediaSystemPrompt,
+    system: scenario.systemPrompt,
     tracePath: join(RUN_DIR, `${threadId}.events.ndjson`),
     tools,
   };
@@ -176,6 +192,8 @@ async function openHost(resumeId: string | undefined, providerId: string): Promi
 interface TurnOptions {
   readonly autoApprove: boolean;
   readonly maxSteps?: number;
+  readonly summarize?: boolean;
+  readonly summarizeAt?: number;
 }
 
 /**
@@ -203,6 +221,15 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
     cwd: process.cwd(),
     approval: makeApproval(options.autoApprove),
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+    ...(options.summarize === true
+      ? {
+          summarizer: makeProviderSummarizer(provider),
+          ...(host.summary !== undefined ? { priorSummary: host.summary } : {}),
+          ...(options.summarizeAt !== undefined
+            ? { summarizeAt: { atTokens: options.summarizeAt } }
+            : {}),
+        }
+      : {}),
     onEvent: (event) => {
       printEvent(event);
       trace.push(event);
@@ -218,6 +245,15 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
     reason: result.reason,
     usage: result.usage,
   });
+
+  // Persist a fresh summary so the next turn reuses it instead of paying again.
+  if (
+    result.summary !== undefined &&
+    (host.summary === undefined || result.summary.frontier > host.summary.frontier)
+  ) {
+    await store.saveSummary(host.threadId, result.summary);
+    host.summary = result.summary;
+  }
 
   if (trace.length > 0) {
     await mkdir(dirname(host.tracePath), { recursive: true });
@@ -241,10 +277,15 @@ function reportSession(host: Host): void {
   );
 }
 
-async function runLive(task: string, options: TurnOptions, resumeId?: string): Promise<void> {
+async function runLive(
+  task: string,
+  options: TurnOptions,
+  resumeId?: string,
+  scenario: Scenario = resolveScenario(undefined),
+): Promise<void> {
   const provider = openAIProviderFromEnv();
-  console.log(dim(`provider ${provider.id}`));
-  const host = await openHost(resumeId, provider.id);
+  console.log(dim(`provider ${provider.id} · scenario ${scenario.id} (${scenario.tools.length} tools)`));
+  const host = await openHost(resumeId, provider.id, scenario);
   const result = await runOneTurn(host, task, options);
 
   if (result.reason === "awaiting_approval") {
@@ -257,10 +298,14 @@ async function runLive(task: string, options: TurnOptions, resumeId?: string): P
   reportSession(host);
 }
 
-async function runChat(options: TurnOptions, resumeId?: string): Promise<void> {
+async function runChat(
+  options: TurnOptions,
+  resumeId?: string,
+  scenario: Scenario = resolveScenario(undefined),
+): Promise<void> {
   const provider = openAIProviderFromEnv();
-  console.log(dim(`provider ${provider.id}`));
-  const host = await openHost(resumeId, provider.id);
+  console.log(dim(`provider ${provider.id} · scenario ${scenario.id} (${scenario.tools.length} tools)`));
+  const host = await openHost(resumeId, provider.id, scenario);
   if (host.messages.length > 0) {
     console.log(dim(`resumed ${host.messages.length} messages from ${host.threadId}`));
   }
@@ -295,7 +340,7 @@ async function runDemo(caseId: string | undefined): Promise<void> {
     return;
   }
 
-  const tools = createAllTools();
+  const tools = mediaScenario.tools;
   const provider = new ScriptedProvider(target.script, `scripted:${target.id}`);
   let messages: readonly Message[] = [];
 
@@ -308,7 +353,7 @@ async function runDemo(caseId: string | undefined): Promise<void> {
       messages,
       provider,
       tools,
-      system: mediaSystemPrompt,
+      system: mediaScenario.systemPrompt,
       cwd: process.cwd(),
       onEvent: printEvent,
     });
@@ -318,7 +363,7 @@ async function runDemo(caseId: string | undefined): Promise<void> {
 
 async function runEval(live: boolean): Promise<void> {
   const cases = await loadCases();
-  const tools = createAllTools();
+  const tools = mediaScenario.tools;
   const provider = live ? openAIProviderFromEnv() : undefined;
 
   if (live) {
@@ -329,7 +374,7 @@ async function runEval(live: boolean): Promise<void> {
   for (const item of cases) {
     results.push(
       await runCase(item, tools, {
-        system: mediaSystemPrompt,
+        system: mediaScenario.systemPrompt,
         ...(provider === undefined ? {} : { provider }),
       }),
     );
@@ -460,6 +505,8 @@ function usage(): void {
       "  replay <file.events.ndjson>                re-print a recorded event stream",
       "",
       "  --store jsonl|sqlite   where sessions live (default jsonl; sqlite is opt-in until the UI needs queries)",
+      "  --scenario media|coding  which tool set + policy to ship (default media: 7 tools instead of 13)",
+      "  --summarize [--summarize-at <tokens>]  compress old turns into a summary when the request is large (default 24k)",
       "",
       "Every live turn writes an event trace to runs/sessions/<thread>.events.ndjson.",
       "Sessions live in runs/sessions/ (jsonl) or runs/sessions/sessions.db (sqlite). Both are gitignored.",
@@ -474,11 +521,13 @@ interface ParsedArgs {
   readonly positional: readonly string[];
   readonly resume?: string;
   readonly store?: string;
+  readonly scenario?: string;
+  readonly summarizeAt?: number;
   readonly maxSteps?: number;
 }
 
 /**
- * Hand-rolled parsing because the CLI has three value-taking flags.
+ * Hand-rolled parsing because the CLI has four value-taking flags.
  * `--resume <id>` must consume its value, otherwise the id would be joined into
  * the task string (`run "放晴天" --resume thread_x` → task "放晴天 thread_x").
  */
@@ -487,6 +536,8 @@ function parseArgs(args: readonly string[]): ParsedArgs {
   const positional: string[] = [];
   let resume: string | undefined;
   let storeKindArg: string | undefined;
+  let scenarioArg: string | undefined;
+  let summarizeAt: number | undefined;
   let maxSteps: number | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -507,6 +558,24 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     }
     if (arg.startsWith("--store=")) {
       storeKindArg = arg.slice("--store=".length);
+      continue;
+    }
+    if (arg === "--scenario") {
+      scenarioArg = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--scenario=")) {
+      scenarioArg = arg.slice("--scenario=".length);
+      continue;
+    }
+    if (arg === "--summarize-at") {
+      summarizeAt = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--summarize-at=")) {
+      summarizeAt = Number(arg.slice("--summarize-at=".length));
       continue;
     }
     if (arg === "--max-steps") {
@@ -530,6 +599,8 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     positional,
     ...(resume !== undefined ? { resume } : {}),
     ...(storeKindArg !== undefined ? { store: storeKindArg } : {}),
+    ...(scenarioArg !== undefined ? { scenario: scenarioArg } : {}),
+    ...(summarizeAt !== undefined && Number.isFinite(summarizeAt) ? { summarizeAt } : {}),
     ...(maxSteps !== undefined && Number.isFinite(maxSteps) ? { maxSteps } : {}),
   };
 }
@@ -541,6 +612,8 @@ async function main(): Promise<void> {
   const { flags, positional, resume: resumeId } = parsed;
   const options: TurnOptions = {
     autoApprove: flags.includes("--yes"),
+    summarize: flags.includes("--summarize"),
+    ...(parsed.summarizeAt !== undefined ? { summarizeAt: parsed.summarizeAt } : {}),
     ...(parsed.maxSteps !== undefined ? { maxSteps: parsed.maxSteps } : {}),
   };
 
@@ -551,6 +624,7 @@ async function main(): Promise<void> {
   }
   storeKind = parsed.store === "sqlite" ? "sqlite" : "jsonl";
   store = storeKind === "sqlite" ? new SqliteSessionStore(join(RUN_DIR, "sessions.db")) : new JsonlSessionStore(RUN_DIR);
+  const scenario = resolveScenario(parsed.scenario);
 
   if (command === "run") {
     if (flags.includes("--mock")) {
@@ -563,12 +637,12 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    await runLive(task, options, resumeId);
+    await runLive(task, options, resumeId, scenario);
     return;
   }
 
   if (command === "chat") {
-    await runChat(options, resumeId);
+    await runChat(options, resumeId, scenario);
     return;
   }
 

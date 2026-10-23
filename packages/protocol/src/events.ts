@@ -68,6 +68,14 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     droppedMessages: z.number().int().nonnegative(),
   }),
   z.object({
+    type: z.literal("context.summarized"),
+    ...base,
+    tokensBefore: z.number().int().nonnegative(),
+    tokensAfter: z.number().int().nonnegative(),
+    summarizedMessages: z.number().int().nonnegative(),
+    keptMessages: z.number().int().nonnegative(),
+  }),
+  z.object({
     type: z.literal("error"),
     ...base,
     message: z.string(),

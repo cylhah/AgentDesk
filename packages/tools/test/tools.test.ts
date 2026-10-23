@@ -2,11 +2,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  codingScenario,
   createAllTools,
   globTool,
   grepTool,
+  mediaScenario,
   patchTool,
   readTool,
+  resolveScenario,
   shellTool,
   writeTool,
 } from "@agentdesk/tools";
@@ -103,6 +106,30 @@ describe("shell tool", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toContain("agentdesk");
     expect(result.output).toContain("exit=0");
+  });
+});
+
+describe("scenarios", () => {
+  it("keeps the tool sets small: 7 media, 6 coding, 13 total", () => {
+    // Shipping all 13 tools costs ~1.7k input tokens on every request; a media
+    // turn only needs 7. The split is the single biggest prompt-cost lever.
+    expect(mediaScenario.tools).toHaveLength(7);
+    expect(codingScenario.tools).toHaveLength(6);
+    expect(createAllTools()).toHaveLength(13);
+    expect(mediaScenario.tools.some((tool) => tool.name === "fs_read")).toBe(false);
+    expect(codingScenario.tools.some((tool) => tool.name === "play")).toBe(false);
+  });
+
+  it("defaults to media and rejects unknown scenario ids", () => {
+    expect(resolveScenario(undefined).id).toBe("media");
+    expect(resolveScenario("coding").id).toBe("coding");
+    expect(() => resolveScenario("nope")).toThrow(/unknown scenario/);
+  });
+
+  it("pairs every scenario with a policy, never tools without instructions", () => {
+    for (const scenario of [mediaScenario, codingScenario]) {
+      expect(scenario.systemPrompt.length).toBeGreaterThan(50);
+    }
   });
 });
 

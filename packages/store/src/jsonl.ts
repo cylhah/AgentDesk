@@ -96,6 +96,7 @@ export class JsonlSessionStore implements SessionStore {
     let header: SessionHeader | undefined;
     const messages: Message[] = [];
     const turns: StoredTurn[] = [];
+    let latestSummary: { text: string; frontier: number } | undefined;
     let skippedLines = 0;
 
     for (const line of raw.split("\n")) {
@@ -117,6 +118,10 @@ export class JsonlSessionStore implements SessionStore {
         case "turn":
           turns.push(parsed);
           break;
+        case "summary":
+          // Last summary wins: it covers a longer prefix than the previous one.
+          latestSummary = { text: parsed.text, frontier: parsed.frontier };
+          break;
         default:
           skippedLines += 1;
       }
@@ -125,7 +130,23 @@ export class JsonlSessionStore implements SessionStore {
     if (header === undefined) {
       throw new Error(`session ${threadId} has no header line — file is corrupt`);
     }
-    return { header, messages, turns, skippedLines };
+    return {
+      header,
+      messages,
+      turns,
+      ...(latestSummary !== undefined ? { summary: latestSummary } : {}),
+      skippedLines,
+    };
+  }
+
+  async saveSummary(threadId: string, summary: { text: string; frontier: number }): Promise<void> {
+    await this.appendLine(this.fileFor(threadId), {
+      v: 1,
+      type: "summary",
+      ts: Date.now(),
+      text: summary.text,
+      frontier: summary.frontier,
+    });
   }
 
   async list(): Promise<SessionSummary[]> {

@@ -103,6 +103,19 @@ describe.each(implementations)("%s store", (_kind, open) => {
   it("fails loudly on an unknown thread", async () => {
     await expect(store.load("thread_missing")).rejects.toThrow(/no such session/);
   });
+
+  it("keeps one summary per thread, latest wins", async () => {
+    await store.create({ threadId: "thread_s", cwd: dir, provider: "p" });
+    await store.appendMessage("thread_s", "turn_1", { role: "user", content: "hi" });
+
+    await store.saveSummary("thread_s", { text: "第一版摘要", frontier: 2 });
+    await store.saveSummary("thread_s", { text: "第二版摘要", frontier: 4 });
+
+    const loaded = await store.load("thread_s");
+    expect(loaded.summary).toEqual({ text: "第二版摘要", frontier: 4 });
+    // The messages themselves are untouched by summarisation.
+    expect(loaded.messages).toHaveLength(1);
+  });
 });
 
 describe("sqlite store", () => {

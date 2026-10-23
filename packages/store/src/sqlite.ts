@@ -70,6 +70,12 @@ export class SqliteSessionStore implements SessionStore {
         steps        INTEGER NOT NULL,
         PRIMARY KEY (thread_id, turn_id)
       );
+      CREATE TABLE IF NOT EXISTS summaries (
+        thread_id TEXT PRIMARY KEY REFERENCES sessions(thread_id) ON DELETE CASCADE,
+        ts        INTEGER NOT NULL,
+        text      TEXT NOT NULL,
+        frontier  INTEGER NOT NULL
+      );
     `);
   }
 
@@ -140,6 +146,15 @@ export class SqliteSessionStore implements SessionStore {
         turn.usage.outputTokens,
         turn.usage.steps,
       );
+  }
+
+  async saveSummary(threadId: string, summary: { text: string; frontier: number }): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO summaries (thread_id, ts, text, frontier) VALUES (?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET ts = excluded.ts, text = excluded.text, frontier = excluded.frontier`,
+      )
+      .run(threadId, Date.now(), summary.text, summary.frontier);
   }
 
   async load(threadId: string): Promise<LoadedSession> {
@@ -218,7 +233,19 @@ export class SqliteSessionStore implements SessionStore {
       },
     }));
 
-    return { header, messages, turns, skippedLines: 0 };
+    const summaryRow = this.db
+      .prepare(`SELECT text, frontier FROM summaries WHERE thread_id = ?`)
+      .get(threadId) as { text: string; frontier: number } | undefined;
+
+    return {
+      header,
+      messages,
+      turns,
+      ...(summaryRow !== undefined
+        ? { summary: { text: summaryRow.text, frontier: summaryRow.frontier } }
+        : {}),
+      skippedLines: 0,
+    };
   }
 
   async list(): Promise<SessionSummary[]> {

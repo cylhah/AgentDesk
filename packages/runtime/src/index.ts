@@ -3,3 +3,4 @@ export * from "./scripted-provider";
 export * from "./openai-provider";
 export * from "./loop";
 export * from "./context";
+export * from "./summarize";

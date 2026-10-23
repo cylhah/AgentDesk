@@ -56,9 +56,17 @@ describe("ids", () => {
     expect(newId("turn")).toMatch(/^turn_[0-9a-f-]{36}$/);
   });
 
-  it("estimates tokens at roughly 4 chars per token", () => {
+  it("estimates Latin text at roughly 4 chars per token", () => {
     expect(estimateTokens("")).toBe(1);
     expect(estimateTokens("abcd")).toBe(1);
     expect(estimateTokens("a".repeat(400))).toBe(100);
+  });
+
+  it("charges CJK per character, not per four", () => {
+    // A Chinese transcript cost ~3× what `length / 4` predicted on the real endpoint.
+    const chinese = "开着车听着歌".repeat(100); // 600 chars, all CJK
+    const estimate = estimateTokens(chinese);
+    expect(estimate).toBeGreaterThan(300);
+    expect(estimate).toBeLessThan(460);
   });
 });
