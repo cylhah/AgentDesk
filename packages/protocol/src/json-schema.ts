@@ -32,6 +32,7 @@ type AnyDef = {
   checks?: { kind: string; value?: number }[];
   values?: unknown[];
   value?: unknown;
+  defaultValue?: unknown;
   innerType?: z.ZodTypeAny;
   schema?: z.ZodTypeAny;
   typeNameOverride?: string;
@@ -69,6 +70,36 @@ function withDescription(target: JsonSchema, schema: z.ZodTypeAny): JsonSchema {
 }
 
 export function zodToJsonSchema(input: z.ZodTypeAny): JsonSchema {
+  return applyWrapperMetadata(convert(input), input);
+}
+
+/**
+ * `z.string().optional().describe("x")` puts both the description and the
+ * default on the *wrapper*, but `convert` unwraps to the inner type first — so
+ * these would silently disappear from the schema the model sees. Read them
+ * from the original schema. (Found by dumping the real request body: every
+ * optional argument of `search_media` had lost its description.)
+ */
+function applyWrapperMetadata(schema: JsonSchema, input: z.ZodTypeAny): JsonSchema {
+  const def = (input as unknown as { _def: AnyDef })._def;
+  let result = schema;
+
+  if (input.description !== undefined) {
+    result = { ...result, description: input.description };
+  }
+
+  if (def.typeName === "ZodDefault") {
+    const value =
+      typeof def.defaultValue === "function"
+        ? (def.defaultValue as () => unknown)()
+        : def.defaultValue;
+    if (value !== undefined) result = { ...result, default: value };
+  }
+
+  return result;
+}
+
+function convert(input: z.ZodTypeAny): JsonSchema {
   const schema = unwrap(input);
   const def = (schema as unknown as { _def: AnyDef })._def;
 

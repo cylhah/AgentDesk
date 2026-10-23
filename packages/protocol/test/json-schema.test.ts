@@ -26,6 +26,25 @@ describe("zodToJsonSchema", () => {
     expect(json.required).toBeUndefined();
   });
 
+  it("keeps descriptions and defaults that live on optional wrappers", () => {
+    // Regression: `z.string().optional().describe(...)` used to lose the
+    // description, so the model saw a bare `{"type":"string"}` with no hint
+    // about what the argument means.
+    const json = zodToJsonSchema(
+      z.object({
+        query: z.string().optional().describe("free text"),
+        limit: z.number().int().default(5).describe("how many"),
+      }),
+    );
+
+    expect(json.properties?.query).toEqual({ type: "string", description: "free text" });
+    expect(json.properties?.limit).toMatchObject({
+      type: "integer",
+      default: 5,
+      description: "how many",
+    });
+  });
+
   it("handles arrays and unions", () => {
     const json = zodToJsonSchema(
       z.object({

@@ -18,7 +18,7 @@ pnpm install
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 42 个单元测试
+pnpm test                                  # 43 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
