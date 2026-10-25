@@ -1,0 +1,36 @@
+{
+  "id": "long-01",
+  "title": "长历史后仍能正确指代（关键事实只在第一轮）",
+  "seed": {
+    "intro": {
+      "user": "记一下：以后我说「那个歌手」，就是指周杰伦。先放一首他的歌。",
+      "assistant": "记下了：那个歌手 = 周杰伦。正在播放周杰伦的《晴天》。"
+    },
+    "turns": 120,
+    "user": "再来一首，随便放点什么都行",
+    "assistant": "好的，正在播放。"
+  },
+  "inputs": ["再来一首刚才那个歌手的歌"],
+  "script": [
+    {
+      "text": "",
+      "toolCalls": [
+        { "id": "c1", "name": "search_media", "args": { "artist": "周杰伦" } }
+      ]
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "id": "c2", "name": "play", "args": { "trackId": "t-002" } }]
+    },
+    {
+      "text": "还有《七里香》和《夜曲》，先给你播《七里香》。",
+      "toolCalls": []
+    }
+  ],
+  "expect": {
+    "mustCall": [
+      { "name": "search_media", "args": { "artist": "周杰伦" } },
+      { "name": "play" }
+    ]
+  }
+}

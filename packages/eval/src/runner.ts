@@ -64,6 +64,24 @@ export async function runCase(
   const startedAt = Date.now();
 
   let messages: readonly Message[] = [];
+
+  // Seeded history: the point of this suite is that the request is already
+  // large before the model is asked anything.
+  if (testCase.seed !== undefined) {
+    const seeded: Message[] = [];
+    // The intro holds the fact the last question refers back to. If compaction
+    // drops it, the model can no longer resolve "那个歌手" — which is exactly
+    // what this suite is here to expose.
+    if (testCase.seed.intro !== undefined) {
+      seeded.push({ role: "user", content: testCase.seed.intro.user });
+      seeded.push({ role: "assistant", content: testCase.seed.intro.assistant });
+    }
+    for (let index = 1; index <= testCase.seed.turns; index += 1) {
+      seeded.push({ role: "user", content: `${testCase.seed.user}（第 ${index} 轮）` });
+      seeded.push({ role: "assistant", content: testCase.seed.assistant });
+    }
+    messages = seeded;
+  }
   let reason = "completed";
   let inputTokens = 0;
   let outputTokens = 0;

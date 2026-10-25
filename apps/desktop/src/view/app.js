@@ -293,6 +293,41 @@ async function loadSession(threadId) {
   }
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Minimal trend line: a regression should be visible without reading numbers. */
+function sparkline(values) {
+  if (values.length < 2) {
+    return el("div", "note", "至少两次运行才有趋势");
+  }
+
+  const width = 240;
+  const height = 44;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const span = Math.max(1, max - min);
+
+  const points = values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * (width - 4) + 2;
+      const y = height - 3 - ((value - min) / span) * (height - 8);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const polyline = document.createElementNS(SVG_NS, "polyline");
+  polyline.setAttribute("points", points);
+  polyline.setAttribute("fill", "none");
+  polyline.setAttribute("stroke", "#38bdf8");
+  polyline.setAttribute("stroke-width", "1.5");
+  polyline.setAttribute("stroke-linejoin", "round");
+  svg.append(polyline);
+  return svg;
+}
+
 /** Recorded eval runs: pass rate, cost and latency — the "three tables", in one place. */
 function renderMetrics(runs) {
   metricsBody.replaceChildren();
@@ -339,6 +374,7 @@ function renderMetrics(runs) {
         "note",
         [
           run.live ? "live" : "scripted",
+          run.flags?.suite !== undefined && run.flags.suite !== "media" ? run.flags.suite : "",
           run.flags?.maxContextTokens !== undefined ? `ctx=${run.flags.maxContextTokens}` : "",
           run.flags?.summarize === true ? "summarize" : "",
         ]
@@ -349,6 +385,26 @@ function renderMetrics(runs) {
     table.append(row);
   }
   metricsBody.append(table);
+
+  const tokenSeries = runs.map((run) => run.summary.inputTokens + run.summary.outputTokens);
+  const latencySeries = runs.map((run) => run.summary.p50Ms);
+  const charts = el("div", "charts");
+  for (const [label, series, unit] of [
+    ["tokens / run", tokenSeries, ""],
+    ["p50 latency", latencySeries, "ms"],
+  ]) {
+    const block = el("div", "chart");
+    block.append(el("span", "label", label), sparkline(series));
+    block.append(
+      el(
+        "span",
+        "range",
+        `${Math.min(...series).toLocaleString()}${unit} … ${Math.max(...series).toLocaleString()}${unit}`,
+      ),
+    );
+    charts.append(block);
+  }
+  metricsBody.append(charts);
 
   const latest = runs[runs.length - 1];
   metricsBody.append(el("h2", null, `最近一次（${new Date(latest.ts).toISOString().slice(0, 16).replace("T", " ")}）`));

@@ -21,7 +21,12 @@ import { AuditLog, JsonlSessionStore, SqliteSessionStore, deriveItems, type Sess
 import { mediaScenario, resolveScenario, type Scenario } from "@agentdesk/tools";
 import { createWorktree } from "@agentdesk/workspace";
 
-const FIXTURE_DIR = resolve(process.cwd(), "fixtures/media");
+const FIXTURE_DIRS = {
+  media: resolve(process.cwd(), "fixtures/media"),
+  long: resolve(process.cwd(), "fixtures/long"),
+} as const;
+type Suite = keyof typeof FIXTURE_DIRS | "all";
+
 const RUN_DIR = resolve(process.cwd(), "runs/sessions");
 const auditLog = new AuditLog(resolve(process.cwd(), "runs/audit.ndjson"));
 // Chosen in main() from `--store`; both satisfy SessionStore.
@@ -50,16 +55,31 @@ function closePrompt(): void {
   rl = undefined;
 }
 
-async function loadCases(): Promise<EvalCase[]> {
-  const files = (await readdir(FIXTURE_DIR))
-    .filter((file) => file.endsWith(".json"))
-    .sort();
-  return Promise.all(
-    files.map(async (file) => {
-      const raw = await readFile(join(FIXTURE_DIR, file), "utf8");
-      return JSON.parse(raw) as EvalCase;
-    }),
-  );
+/** `--suite` is a string on the command line; keep the union honest. */
+function parseSuite(value: string | undefined): Suite {
+  if (value === "long" || value === "all") return value;
+  return "media";
+}
+
+async function loadCases(suite: Suite = "media"): Promise<EvalCase[]> {  const dirs =
+    suite === "all"
+      ? Object.values(FIXTURE_DIRS)
+      : [FIXTURE_DIRS[suite]];
+
+  const cases: EvalCase[] = [];
+  for (const dir of dirs) {
+    let files: string[];
+    try {
+      files = (await readdir(dir)).filter((file) => file.endsWith(".json")).sort();
+    } catch {
+      continue; // an optional suite that does not exist yet
+    }
+    for (const file of files) {
+      const raw = await readFile(join(dir, file), "utf8");
+      cases.push(JSON.parse(raw) as EvalCase);
+    }
+  }
+  return cases;
 }
 
 function printEvent(event: AgentEvent): void {
@@ -482,10 +502,16 @@ interface EvalRunOptions {
   readonly contextTokens?: number;
   readonly summarize: boolean;
   readonly summarizeAt?: number;
+  readonly suite: Suite;
 }
 
 async function runEval(live: boolean, options: EvalRunOptions): Promise<void> {
-  const cases = await loadCases();
+  const cases = await loadCases(options.suite);
+  if (cases.length === 0) {
+    console.error(red(`no cases in suite "${options.suite}"`));
+    process.exitCode = 1;
+    return;
+  }
   const tools = mediaScenario.tools;
   const provider = live ? openAIProviderFromEnv() : undefined;
 
@@ -523,6 +549,7 @@ async function runEval(live: boolean, options: EvalRunOptions): Promise<void> {
       scenario: mediaScenario.id,
       live,
       flags: {
+        suite: options.suite,
         ...(options.contextTokens !== undefined
           ? { maxContextTokens: options.contextTokens }
           : {}),
@@ -570,6 +597,7 @@ async function showHistory(limit: number): Promise<void> {
     `${run.summary.p50Ms}ms`,
     [
       run.live ? "live" : "scripted",
+      run.flags.suite !== undefined && run.flags.suite !== "media" ? run.flags.suite : "",
       run.flags.maxContextTokens !== undefined ? `ctx=${run.flags.maxContextTokens}` : "",
       run.flags.summarize === true ? "summarize" : "",
     ]
@@ -820,6 +848,7 @@ interface ParsedArgs {
   readonly scenario?: string;
   readonly summarizeAt?: number;
   readonly contextTokens?: number;
+  readonly suite?: string;
   readonly limit?: number;
   readonly gcDays?: number;
   readonly maxSteps?: number;
@@ -838,6 +867,7 @@ function parseArgs(args: readonly string[]): ParsedArgs {
   let scenarioArg: string | undefined;
   let summarizeAt: number | undefined;
   let contextTokens: number | undefined;
+  let suiteArg: string | undefined;
   let limit: number | undefined;
   let gcDays: number | undefined;
   let maxSteps: number | undefined;
@@ -878,6 +908,15 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     }
     if (arg.startsWith("--summarize-at=")) {
       summarizeAt = Number(arg.slice("--summarize-at=".length));
+      continue;
+    }
+    if (arg === "--suite") {
+      suiteArg = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--suite=")) {
+      suiteArg = arg.slice("--suite=".length);
       continue;
     }
     if (arg === "--context-tokens") {
@@ -931,6 +970,7 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     ...(scenarioArg !== undefined ? { scenario: scenarioArg } : {}),
     ...(summarizeAt !== undefined && Number.isFinite(summarizeAt) ? { summarizeAt } : {}),
     ...(contextTokens !== undefined && Number.isFinite(contextTokens) ? { contextTokens } : {}),
+    ...(suiteArg !== undefined ? { suite: suiteArg } : {}),
     ...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
     ...(gcDays !== undefined && Number.isFinite(gcDays) ? { gcDays } : {}),
     ...(maxSteps !== undefined && Number.isFinite(maxSteps) ? { maxSteps } : {}),
@@ -1007,6 +1047,7 @@ async function main(): Promise<void> {
     await runEval(flags.includes("--live"), {
       record: flags.includes("--record"),
       summarize: flags.includes("--summarize"),
+      suite: parseSuite(parsed.suite),
       ...(parsed.contextTokens !== undefined ? { contextTokens: parsed.contextTokens } : {}),
       ...(parsed.summarizeAt !== undefined ? { summarizeAt: parsed.summarizeAt } : {}),
     });

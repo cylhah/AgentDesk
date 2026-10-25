@@ -28,6 +28,21 @@ export interface EvalCase {
   readonly inputs: readonly string[];
   readonly script: readonly ScriptStep[];
   readonly expect: Expectation;
+  /**
+   * Pre-existing history. Used by the long-context suite: a generated prefix
+   * large enough that compaction/summarisation actually has something to do.
+   * Generated rather than written out so the fixture stays readable.
+   */
+  readonly seed?: {
+    /** A single turn that carries the fact the final question depends on. */
+    readonly intro?: {
+      readonly user: string;
+      readonly assistant: string;
+    };
+    readonly turns: number;
+    readonly user: string;
+    readonly assistant: string;
+  };
 }
 
 export interface CaseResult {

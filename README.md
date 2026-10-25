@@ -236,51 +236,58 @@ pending 清空        null
 ## 度量与回归
 
 ```bash
-pnpm eval --live --record                        # 跑一次，落一份历史
+pnpm eval --live --record                        # 跑 media 套件，落一份历史
+pnpm eval --live --suite long --record           # 长历史套件（关键事实只在第一轮）
 pnpm dev history                                 # 通过率 / 成本 / 延迟 / 条件
-pnpm eval --live --record --context-tokens 400   # 压缩 A/B：把请求窗口压到 400 tokens
 ```
 
-看板右上角的「度量」按钮读的是**同一份** `runs/eval-history.ndjson`——命令行和 GUI 不会出现两套数字。
+看板右上角「度量」读的是**同一份** `runs/eval-history.ndjson`——命令行和 GUI 不会出现两套数字，还带 token 与 p50 的趋势线。
 
-```
-when         model          pass  tokens  p50     flags
-10-25 09:37  deepseek-chat  5/5   13888   2252ms  live
-10-25 09:37  deepseek-chat  5/5   13880   1999ms  live ctx=400
-10-25 09:37  deepseek-chat  5/5   13551   2107ms  live ctx=1
-```
+### 长历史 A/B：压缩到底压掉了什么
 
-`flags` 列不是装饰：**同一个 5/5 在不同条件下不是同一个结论**。这次三个数字几乎一样，原因很具体——
+`fixtures/long/long-01.json` 用 120 轮对话把"那个歌手 = 周杰伦"这条事实推到很远的地方，
+最后一句是「再来一首刚才那个歌手的歌」。三组对照（`OPENAI_TEMPERATURE=0`，两次运行 token 完全一致）：
 
-- 夹具只有 2–6 条消息，而压缩针对的是消息历史；工具 schema（~1k tokens）不在它的统计范围里。
-- 所以 `ctx=400` 甚至 `ctx=1` 都没有真正触发截断，5/5 只能说明"没有被压坏"，不能说明"压缩无害"。
-- 压缩的真实效果在 Week 3 的长会话实验里：80 条消息 → 117 tokens 摘要，下一轮请求 21k → 1.2k。
+| 配置 | tokens | 结果 | 为什么 |
+|---|---|---|---|
+| 基线（不压缩） | 11,982 | PASS | 全量历史，模型能追到第一轮的约定 |
+| 硬裁剪 `ctx=1200` | **5,131** | **FAIL** | 省 57% token，但把"那个歌手=周杰伦"裁掉了，模型只查了当前播放就反问 |
+| 摘要 `--summarize-at 1200` | 7,190 | PASS | 省 40%，摘要保留了这条事实 |
 
-**结论**：度量管线通了，但 A/B 需要一个**长历史夹具**才有效。这条记进 Week 8 待办，而不是含糊地写"压缩前后 5/5 → 5/5，无影响"。
+**这就是"结构性压缩 vs 语义压缩"的真实差价**：硬裁剪更便宜，但它丢的是事实；摘要贵一点，但保住的是可推断性。
 
-worktree 也有了回收：
+`OPENAI_TEMPERATURE=0` 不是可选装饰：不设时同一输入会一次调工具、一次只回文本（试过，两次 token 相同、结果相反）。
+**回归的前提是可复现**，所以基线必须先把温度钉死。
+
+### 两次失败的夹具迭代（也是结论）
+
+1. **每轮都提周杰伦** → 硬裁剪后最近几轮仍带着事实，`ctx=1` 也 5/5，测不出差异。
+2. **400 轮 + 事实只在第一轮** → 连基线都失败：模型直接反问"想听哪位"，与压缩无关。
+3. **120 轮 + 显式约定（"以后我说那个歌手就是指周杰伦"）+ temp=0** → 基线稳定通过，裁剪稳定失败。
+
+worktree 回收：
 
 ```bash
 pnpm dev worktrees           # 列出每个会话的 worktree
 pnpm dev worktrees --gc 7    # 删掉 7 天没动过的（只动 runs/worktrees/ 下的）
 ```
 
-## 待办（Week 8）
+## 待办（Week 9）
 
-Week 7 已完成：
+Week 8 已完成：
 
-- [x] eval 历史：`--record` 追加 NDJSON（通过率/成本/延迟/条件），`pnpm dev history` 读回
-- [x] 看板「度量」：同一份历史的表格 + 最近一次的分 case 明细
-- [x] 压缩 A/B 的**管线**（`--context-tokens`），并测出"现夹具太短、测不出差异"这个结论
-- [x] worktree GC：`worktrees [--gc <days>]`，只删 `runs/worktrees/` 下的
-- [x] 测试：118 passed（新增 eval history 5 / worktree gc 3）
+- [x] 长历史套件（`--suite long|all`）：seed 历史 + 只在第一轮出现的关键事实
+- [x] 压缩 A/B 有了真差异：硬裁剪 5,131 FAIL / 摘要 7,190 PASS / 基线 11,982 PASS
+- [x] eval 可复现：`OPENAI_TEMPERATURE=0`（同一输入两次 token 完全一致）
+- [x] 看板「度量」加趋势线（tokens、p50）
+- [x] 测试：118 passed
 
-Week 8 开始：
+Week 9 开始（包装）：
 
-- [ ] 长历史夹具：一个"50 轮后仍能正确指代"的 case，让压缩 A/B 真正有对照
-- [ ] 成本/延迟趋势图（不只是表格）
-- [ ] 看板展示 pending 队列（多个待审批而不是一个）
-- [ ] 打包（Electron 安装包）与首次运行引导
+- [ ] 多个 pending 审批的队列视图（现在一次只展示一个）
+- [ ] Electron 打包（安装包）+ 首次运行引导
+- [ ] README 演示视频脚本 + 3 篇文章提纲
+- [ ] 简历 bullet 用真实数字回填（成功率 / 成本 / 延迟 / 裁剪对照）
 
 ## 设计文档
 

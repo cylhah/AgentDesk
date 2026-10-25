@@ -8,6 +8,12 @@ export interface OpenAIProviderConfig {
   readonly model?: string;
   readonly timeoutMs?: number;
   readonly maxRetries?: number;
+  /**
+   * Explicit sampling temperature. Left undefined => endpoint default (1.0 for
+   * DeepSeek/OpenAI), which makes "same prompt, different tool calls" normal.
+   * Eval runs set 0 so a regression means a code change, not a coin flip.
+   */
+  readonly temperature?: number;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -146,6 +152,7 @@ export class OpenAIProvider implements ModelProvider {
   private readonly model: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
+  private readonly temperature: number | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(config: OpenAIProviderConfig) {
@@ -153,6 +160,7 @@ export class OpenAIProvider implements ModelProvider {
     this.model = config.model ?? "gpt-4o-mini";
     this.timeoutMs = config.timeoutMs ?? 60_000;
     this.maxRetries = config.maxRetries ?? 2;
+    this.temperature = config.temperature;
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.apiKey = config.apiKey;
     this.id = `openai:${this.model}`;
@@ -164,6 +172,7 @@ export class OpenAIProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: toWireMessages(req.messages, req.system),
+      ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
     };
     if (req.tools.length > 0) {
       body.tools = toWireTools(req.tools);
@@ -212,6 +221,7 @@ export class OpenAIProvider implements ModelProvider {
       messages: toWireMessages(req.messages, req.system),
       stream: true,
       stream_options: { include_usage: true },
+      ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
     };
     if (req.tools.length > 0) {
       body.tools = toWireTools(req.tools);
@@ -335,5 +345,11 @@ export function openAIProviderFromEnv(
     apiKey,
     baseUrl: env.OPENAI_BASE_URL,
     model: env.OPENAI_MODEL,
+    // Set OPENAI_TEMPERATURE=0 for repeatable eval runs; unset keeps the
+    // endpoint default, which is what interactive use wants.
+    ...(env.OPENAI_TEMPERATURE !== undefined &&
+    Number.isFinite(Number(env.OPENAI_TEMPERATURE))
+      ? { temperature: Number(env.OPENAI_TEMPERATURE) }
+      : {}),
   });
 }

@@ -26,6 +26,7 @@ export interface EvalRunRecord {
   readonly scenario: string;
   readonly live: boolean;
   readonly flags: {
+    readonly suite?: string;
     readonly maxContextTokens?: number;
     readonly summarize?: boolean;
     readonly summarizeAtTokens?: number;
