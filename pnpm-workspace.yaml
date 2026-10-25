@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  electron: true
 
 # Don't re-verify node_modules before every `pnpm <script>`; it turns a
 # harmless warning into a failed command.

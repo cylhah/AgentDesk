@@ -12,6 +12,9 @@ const params = new URLSearchParams(location.search);
 const token = params.get("token") ?? sessionStorage.getItem("agentdesk:token") ?? "";
 if (params.get("token")) sessionStorage.setItem("agentdesk:token", params.get("token"));
 
+/** Present only inside the Electron shell (preload.cjs). Its absence = plain browser. */
+const shell = window.agentdeskShell ?? null;
+
 const timeline = document.getElementById("timeline");
 const sessionsEl = document.getElementById("sessions");
 const dot = document.getElementById("dot");
@@ -188,7 +191,9 @@ function showApproval(name, args) {
         node.disabled = true;
       });
       try {
-        await rpc("turn.resolve", { decision });
+        // In the shell the preload is the privileged path; in a browser it is RPC.
+        if (shell) await shell.resolveApproval(decision);
+        else await rpc("turn.resolve", { decision });
       } catch (error) {
         append(el("div", "note bad", `resolve 失败：${error.message}`));
         panel.remove();
@@ -286,7 +291,9 @@ async function loadSession(threadId) {
 }
 
 async function bootstrap() {
-  if (!token) {
+  // Inside the shell the host runs local-only with --no-auth, and the preload
+  // is the privileged surface. In a browser, a token is required.
+  if (!token && !shell) {
     timeline.replaceChildren(
       el(
         "div",
@@ -300,6 +307,19 @@ async function bootstrap() {
 
   connect();
   void loadSessions();
+
+  if (shell) {
+    try {
+      const info = await shell.info();
+      const badge = document.getElementById("shell");
+      if (badge) {
+        badge.textContent = `shell · Electron ${info.electron} / Chromium ${String(info.chrome).split(".")[0]}`;
+        badge.title = `${info.platform} · node ${info.node} · ${info.host}`;
+      }
+    } catch {
+      // information only; never block the dashboard on it
+    }
+  }
 
   // The page may open after a turn already parked — show the buttons anyway.
   try {

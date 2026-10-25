@@ -184,18 +184,28 @@ time      thread        kind      what        decision  cost
 ## 宿主与看板
 
 ```bash
-pnpm ui                            # 启动宿主（默认 http://127.0.0.1:4780，带 token）
+pnpm ui                            # 浏览器模式（默认 http://127.0.0.1:4780，带 token）
+pnpm ui:electron                   # Electron 窗口（真容器，沙箱渲染进程）
+pnpm ui:electron --run "把车窗打开"  # 起一轮，窗口里点批准/拒绝
 pnpm ui --replay <thread>          # 回放一段录好的事件流
-pnpm ui --run "把车窗打开"          # 宿主跑一轮，审批在看板里点
 pnpm ui --store sqlite             # 读 SQLite 会话
 pnpm ui --no-auth                  # 关掉 token（本机自用）
 ```
 
+**Electron 外壳**（`apps/desktop/electron/`）：
+
+- 主进程不重写宿主，而是用 `ELECTRON_RUN_AS_NODE=1` **把同一个 Node 宿主作为子进程拉起**，再开一个沙箱窗口指向它 —— 宿主代码零改动。
+- 窗口 `contextIsolation: true` / `nodeIntegration: false` / `sandbox: true`：渲染进程拿不到 `fs`、`child_process`、会话存储。
+- `preload.cjs` 只暴露两个方法：`info()`（版本/平台）和 `resolveApproval(decision)`（审批）。这就是「native 边界」在代码里的样子。
+- 实测：窗口标题 `AgentDesk · 座舱媒体`；渲染进程通过 preload 调到主进程后写出 `runs/shell-bridge.log`（`preload bridge ok`）。
+
+> **踩到的坑**：如果从另一个 Electron 应用（如 IDE/agent 宿主）里启动，环境会继承 `ELECTRON_RUN_AS_NODE=1`，此时 `electron` 二进制退化成纯 Node —— `require("electron")` 返回一个路径字符串、`app` 是 undefined。`launch.cjs` 会清掉这个变量再启动，并写了注释说明。
+
 ```
-view（浏览器 / CEF / Electron renderer）
+view（浏览器 / Electron renderer / CEF）
    ├── GET  /events?since=N   SSE：带序号的事件流，断线重连只补缺口
    └── POST /api/rpc          bridge 契约：只有注册过的方法可达
-host（Node 今天；Electron main / native 明天）
+host（Node；由 Electron 主进程或终端拉起）
    └── store · broker · handlers
 ```
 
@@ -221,7 +231,7 @@ rpc 带 token        200
 pending 清空        null
 ```
 
-**为什么还没装 Electron**：这台机器上没法验证 GUI（也没法在 CI 里截图），Electron 的二进制下载还会把「跑不起来」的风险引进主线。宿主与视图的契约、事件流、bridge、HMI 都与容器无关——`packages/bridge` 已经提供**通道型传输**（`createHostTransport` / `createViewTransport`，就是 `ipcRenderer`、WebView2 `postMessage`、CEF 消息路由的形状），换容器只需要在两侧各接一次通道。
+**为什么拖到 Week 6 才装**：这台机器上没法自动化验证 GUI，Electron 的二进制（~100MB）下载还会把「跑不起来」变成主线风险。所以先把容器无关的那层做完（契约、事件流、bridge、HMI），最后才接壳。真正的意外是网络：默认从 GitHub 下载失败（`fetch failed`），换 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 才装上——这一步值得记，换台机器照做即可。
 
 ## 待办（Week 7）
 
@@ -231,7 +241,9 @@ Week 6 已完成：
 - [x] 宿主 token 鉴权：`/events` 与 `/api/rpc` 401，静态资源与 `/health` 公开
 - [x] 审批 UI：看板按钮 → `turn.resolve` → 原地 `resume`，不是重跑
 - [x] 通道型 bridge 传输（Electron / WebView2 / CEF 的接入形状）+ 测试
-- [x] `--run "<task>"`：宿主内跑一轮并parked，方便演示与手测
+- [x] **Electron 外壳**：沙箱窗口 + preload 两方法；宿主作为子进程被拉起，代码零改动
+- [x] `--run "<task>"`：宿主内跑一轮并 parked，方便演示与手测
+- [x] 修掉 `ELECTRON_RUN_AS_NODE` 继承导致 Electron 退化成 Node 的坑（`launch.cjs`）
 
 Week 7 开始（度量与回归）：
 
