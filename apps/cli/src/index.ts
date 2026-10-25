@@ -410,21 +410,38 @@ async function runChat(
   }
   console.log(dim("/exit to stop · /session to show paths"));
 
-  for (;;) {
-    let line: string;
-    try {
-      line = (await ask(`\n${green("you")} `)).trim();
-    } catch {
-      break; // Ctrl+D / closed stdin
-    }
-    if (line === "/exit" || line === "/quit") break;
-    if (line === "/session") {
-      reportSession(host);
-      continue;
-    }
-    if (line.length === 0) continue;
+  // Iterate lines instead of `rl.question()`: with a TTY both behave the same,
+  // but with piped input (tests, `@(...) | pnpm dev chat`) `question()` answers
+  // only the first line and drops the rest, which looked like "chat ends after
+  // one turn". `terminal` is false for pipes so readline does not try to echo.
+  const input = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.stdin.isTTY === true,
+  });
+  rl = input;
+  process.stdout.write(`\n${green("you")} `);
 
-    await runOneTurn(host, line, options);
+  try {
+    for await (const raw of input) {
+      const line = raw.trim();
+      if (line === "/exit" || line === "/quit") break;
+      if (line === "/session") {
+        reportSession(host);
+        process.stdout.write(`\n${green("you")} `);
+        continue;
+      }
+      if (line.length === 0) {
+        process.stdout.write(`\n${green("you")} `);
+        continue;
+      }
+
+      await runOneTurn(host, line, options);
+      process.stdout.write(`\n${green("you")} `);
+    }
+  } finally {
+    input.close();
+    rl = undefined;
   }
 
   reportSession(host);
