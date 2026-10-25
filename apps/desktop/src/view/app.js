@@ -278,8 +278,10 @@ async function loadSessions() {
     for (const session of sessions.slice(0, 20)) {
       const item = document.createElement("li");
       const button = document.createElement("button");
+      const title = session.firstUserText || "(empty)";
+      button.title = `${title}\n${session.threadId} · ${session.turns} turns`;
       button.append(
-        el("span", null, session.firstUserText.slice(0, 24) || "(empty)"),
+        el("span", null, title),
         el("small", null, `${session.threadId.slice(7, 17)} · ${session.turns} turns`),
       );
       button.onclick = () => void loadSession(session.threadId);
@@ -521,7 +523,6 @@ async function submitTask(event) {
 
 /** Consecutive tasks continue the current thread; this is the explicit "start over". */
 async function startNewSession() {
-  if (!window.confirm("开始新的会话？当前对话不会丢，会留在左侧列表里。")) return;
   try {
     await rpc("turn.new");
     timeline.replaceChildren(el("div", "empty", "新会话。输入一个任务开始。"));
