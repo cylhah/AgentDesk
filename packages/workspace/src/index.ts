@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -59,4 +59,84 @@ export async function isGitRepo(repo: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export interface WorktreeEntry {
+  readonly path: string;
+  readonly head?: string;
+  readonly bare: boolean;
+}
+
+/** Parses `git worktree list --porcelain`; the first entry is the main checkout. */
+export async function listWorktrees(repo: string): Promise<WorktreeEntry[]> {
+  const { stdout } = await run("git", ["worktree", "list", "--porcelain"], {
+    cwd: resolve(repo),
+  });
+
+  const entries: WorktreeEntry[] = [];
+  let current: { path?: string; head?: string; bare: boolean } | undefined;
+
+  const flush = (): void => {
+    if (current?.path !== undefined) {
+      entries.push({
+        path: current.path,
+        bare: current.bare,
+        ...(current.head !== undefined ? { head: current.head } : {}),
+      });
+    }
+    current = undefined;
+  };
+
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      current = { path: line.slice("worktree ".length), bare: false };
+      continue;
+    }
+    if (current === undefined) continue;
+    if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length);
+    if (line === "bare") current.bare = true;
+  }
+  flush();
+
+  return entries;
+}
+
+export interface PruneWorktreeInput {
+  readonly repo: string;
+  readonly root?: string;
+  /** Remove worktrees whose directory has not been touched for this long. */
+  readonly olderThanMs: number;
+}
+
+/**
+ * Deletes stale per-session worktrees. Only paths under `root` (default
+ * `runs/worktrees`) are ever candidates — a hand-made worktree elsewhere is the
+ * user's business, not the agent's.
+ */
+export async function pruneWorktrees(input: PruneWorktreeInput): Promise<string[]> {
+  const repo = resolve(input.repo);
+  const root = resolve(input.root ?? join(repo, "runs", "worktrees"));
+  const entries = await listWorktrees(repo);
+  const removed: string[] = [];
+  const cutoff = Date.now() - Math.max(0, input.olderThanMs);
+
+  for (const entry of entries) {
+    const path = resolve(entry.path);
+    if (path === repo || !path.startsWith(root)) continue;
+
+    let mtimeMs = 0;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      continue; // already gone
+    }
+    if (mtimeMs > cutoff) continue;
+
+    await removeWorktree(repo, path);
+    removed.push(path);
+  }
+
+  await run("git", ["worktree", "prune"], { cwd: repo });
+  return removed;
 }

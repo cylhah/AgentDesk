@@ -4,6 +4,7 @@ import type { AgentEvent } from "@agentdesk/protocol";
 import { createBridgeServer, type BridgeMessage, type BridgeRequest } from "@agentdesk/bridge";
 import { SSE_HEADERS, toSseFrame, type EventBroker } from "@agentdesk/eventstream";
 import { deriveItems, type SessionStore } from "@agentdesk/store";
+import { EvalHistory } from "@agentdesk/eval";
 import type { TurnRunner } from "./turn";
 
 export interface HostServerOptions {
@@ -239,6 +240,13 @@ function buildHandlers(
     // Present only when the host was started with `--run`. The view can resolve
     // a parked call; it still cannot submit a task.
     "turn.state": async () => runner?.state() ?? { threadId: null, pending: null, reason: null },
+
+    /** Recorded eval runs: the dashboard's "three tables" (pass rate / cost / latency). */
+    "eval.history": async (params) => {
+      const limit = (params as { limit?: number } | undefined)?.limit ?? 20;
+      const runs = await new EvalHistory().read(typeof limit === "number" ? limit : 20);
+      return runs;
+    },
 
     "turn.resolve": async (params) => {
       if (runner === undefined) throw new Error("host was started without --run");

@@ -50,6 +50,9 @@ importers:
       '@agentdesk/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
+      '@agentdesk/eval':
+        specifier: workspace:*
+        version: link:../../packages/eval
       '@agentdesk/eventstream':
         specifier: workspace:*
         version: link:../../packages/eventstream

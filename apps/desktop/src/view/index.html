@@ -56,6 +56,16 @@
       #sessions button:hover { border-color: var(--accent); }
       #sessions small { display: block; color: var(--dim); font-family: var(--mono); font-size: 11px; margin-top: 2px; }
       #timeline { padding: 20px 24px 120px; display: flex; flex-direction: column; gap: 10px; max-width: 1080px; }
+      #metrics { padding: 20px 24px 120px; max-width: 1080px; }
+      #metrics h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin: 0 0 12px; }
+      #metrics table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12px; }
+      #metrics th { text-align: left; color: var(--dim); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+      #metrics td { padding: 6px 10px; border-bottom: 1px solid #141d28; }
+      #metrics tr:last-child td { border-bottom: none; }
+      #metrics .bar { display: inline-block; height: 6px; border-radius: 3px; background: var(--accent); vertical-align: middle; margin-right: 6px; }
+      #metrics .pass { color: var(--ok); }
+      #metrics .fail { color: var(--bad); }
+      .btn.small { padding: 3px 10px; font-size: 12px; }
       .empty { color: var(--dim); padding: 40px 0; }
       .row { display: flex; gap: 10px; align-items: baseline; }
       .turn-divider {
@@ -99,6 +109,7 @@
       <div class="brand">AgentDesk<span>座舱媒体 Agent · 只读看板</span></div>
       <div class="status"><span id="dot" class="dot"></span><span id="conn">连接中…</span></div>
       <div class="meta">
+        <button id="metrics-toggle" class="btn small" type="button">度量</button>
         <span id="shell" class="tag"></span>
         <span id="seqinfo">seq 0</span> · <span id="tokens">0 tokens</span>
       </div>
@@ -109,6 +120,10 @@
         <ul id="sessions"></ul>
       </aside>
       <section id="timeline"><div class="empty">等待事件…（跑一轮 <code>pnpm dev run</code> 后刷新）</div></section>
+      <section id="metrics" hidden>
+        <h2>评测历史</h2>
+        <div id="metrics-body" class="empty">还没有记录。跑 <code>pnpm eval --live --record</code>。</div>
+      </section>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

@@ -2,7 +2,9 @@ import type { Message, ToolDef } from "@agentdesk/protocol";
 import {
   runTurn,
   ScriptedProvider,
+  type CompactionOptions,
   type ModelProvider,
+  type Summarizer,
 } from "@agentdesk/runtime";
 import type { CaseResult, EvalCase, ExpectedCall } from "./types";
 
@@ -44,6 +46,11 @@ export interface RunCaseOptions {
   readonly provider?: ModelProvider;
   /** Scenario policy handed to the model. Without it a live model behaves like a chat app. */
   readonly system?: string;
+  /** Shrink the request window; used to measure whether compaction hurts success rate. */
+  readonly context?: CompactionOptions;
+  /** Enable semantic compression for the A/B run. */
+  readonly summarizer?: Summarizer;
+  readonly summarizeAt?: { readonly atTokens?: number };
 }
 
 export async function runCase(
@@ -54,6 +61,7 @@ export async function runCase(
   const provider =
     options.provider ?? new ScriptedProvider(testCase.script, `scripted:${testCase.id}`);
   const calls: { name: string; args: unknown }[] = [];
+  const startedAt = Date.now();
 
   let messages: readonly Message[] = [];
   let reason = "completed";
@@ -69,6 +77,9 @@ export async function runCase(
       provider,
       tools,
       ...(options.system !== undefined ? { system: options.system } : {}),
+      ...(options.context !== undefined ? { context: options.context } : {}),
+      ...(options.summarizer !== undefined ? { summarizer: options.summarizer } : {}),
+      ...(options.summarizeAt !== undefined ? { summarizeAt: options.summarizeAt } : {}),
       onEvent: (event) => {
         if (event.type === "tool.call") {
           calls.push({ name: event.name, args: event.args });
@@ -111,6 +122,7 @@ export async function runCase(
     steps,
     inputTokens,
     outputTokens,
+    durationMs: Date.now() - startedAt,
     failures,
   };
 }

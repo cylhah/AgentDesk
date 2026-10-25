@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
   AgentEventSchema,
@@ -8,7 +8,7 @@ import {
   type Message,
   type ToolDef,
 } from "@agentdesk/protocol";
-import { formatTable, runCase, type EvalCase } from "@agentdesk/eval";
+import { EvalHistory, formatTable, runCase, type CaseResult, type EvalCase } from "@agentdesk/eval";
 import {
   makeProviderSummarizer,
   openAIProviderFromEnv,
@@ -477,7 +477,14 @@ async function runDemo(caseId: string | undefined): Promise<void> {
   }
 }
 
-async function runEval(live: boolean): Promise<void> {
+interface EvalRunOptions {
+  readonly record: boolean;
+  readonly contextTokens?: number;
+  readonly summarize: boolean;
+  readonly summarizeAt?: number;
+}
+
+async function runEval(live: boolean, options: EvalRunOptions): Promise<void> {
   const cases = await loadCases();
   const tools = mediaScenario.tools;
   const provider = live ? openAIProviderFromEnv() : undefined;
@@ -486,18 +493,112 @@ async function runEval(live: boolean): Promise<void> {
     console.log(yellow(`live eval against ${provider?.id} — this costs tokens`));
   }
 
-  const results = [];
+  const results: CaseResult[] = [];
   for (const item of cases) {
     results.push(
       await runCase(item, tools, {
         system: mediaScenario.systemPrompt,
         ...(provider === undefined ? {} : { provider }),
+        ...(options.contextTokens !== undefined
+          ? { context: { maxContextTokens: options.contextTokens } }
+          : {}),
+        ...(options.summarize && provider !== undefined
+          ? {
+              summarizer: makeProviderSummarizer(provider),
+              ...(options.summarizeAt !== undefined
+                ? { summarizeAt: { atTokens: options.summarizeAt } }
+                : {}),
+            }
+          : {}),
       }),
     );
   }
 
   console.log(formatTable(results));
+
+  if (options.record) {
+    const history = new EvalHistory();
+    const record = await history.append({
+      model: provider?.id ?? "scripted",
+      scenario: mediaScenario.id,
+      live,
+      flags: {
+        ...(options.contextTokens !== undefined
+          ? { maxContextTokens: options.contextTokens }
+          : {}),
+        ...(options.summarize ? { summarize: true } : {}),
+        ...(options.summarizeAt !== undefined
+          ? { summarizeAtTokens: options.summarizeAt }
+          : {}),
+      },
+      cases: results.map((result) => ({
+        id: result.id,
+        ok: result.ok,
+        reason: result.reason,
+        steps: result.steps,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        durationMs: result.durationMs,
+        failures: result.failures,
+      })),
+    });
+    console.log(
+      dim(
+        `recorded ${record.summary.passed}/${record.summary.total} · ` +
+          `${record.summary.inputTokens + record.summary.outputTokens} tokens · ` +
+          `${record.summary.durationMs}ms · p50 ${record.summary.p50Ms}ms → ${history.file}`,
+      ),
+    );
+  }
+
   if (results.some((result) => !result.ok)) process.exitCode = 1;
+}
+
+/** Eval history: pass rate, cost and latency over time — the Week 8 dashboard's data source. */
+async function showHistory(limit: number): Promise<void> {
+  const runs = await new EvalHistory().read(limit);
+  if (runs.length === 0) {
+    console.log(dim("no recorded runs yet — try: pnpm eval --live --record"));
+    return;
+  }
+
+  const rows = runs.map((run) => [
+    new Date(run.ts).toISOString().slice(5, 16).replace("T", " "),
+    run.model.replace("openai:", ""),
+    `${run.summary.passed}/${run.summary.total}`,
+    String(run.summary.inputTokens + run.summary.outputTokens),
+    `${run.summary.p50Ms}ms`,
+    [
+      run.live ? "live" : "scripted",
+      run.flags.maxContextTokens !== undefined ? `ctx=${run.flags.maxContextTokens}` : "",
+      run.flags.summarize === true ? "summarize" : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  ]);
+  const header = ["when", "model", "pass", "tokens", "p50", "flags"];
+  const widths = header.map((cell, index) =>
+    Math.max(cell.length, ...rows.map((row) => (row[index] ?? "").length)),
+  );
+  const line = (cells: readonly string[]): string =>
+    cells.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ");
+
+  console.log(line(header));
+  console.log(widths.map((width) => "-".repeat(width)).join("  "));
+  for (const row of rows) console.log(line(row));
+
+  const latest = runs[runs.length - 1];
+  if (latest !== undefined) {
+    console.log(dim(`\nlatest per-case:`));
+    for (const entry of latest.cases) {
+      console.log(
+        dim(
+          `  ${entry.id}  ${entry.ok ? "PASS" : "FAIL"}  ${entry.steps} steps  ` +
+            `${entry.inputTokens + entry.outputTokens} tokens  ${entry.durationMs}ms`,
+        ),
+      );
+    }
+  }
 }
 
 async function listSessions(): Promise<void> {
@@ -535,6 +636,42 @@ async function listSessions(): Promise<void> {
  * the truth; this view is what a UI would page over — one assistant message
  * with two tool calls becomes three items.
  */
+/** Lists per-session worktrees; `--gc <days>` deletes ones untouched for that long. */
+async function handleWorktrees(gcDays: number | undefined): Promise<void> {
+  const { listWorktrees, pruneWorktrees } = await import("@agentdesk/workspace");
+  const repo = process.cwd();
+
+  if (gcDays !== undefined) {
+    const removed = await pruneWorktrees({ repo, olderThanMs: gcDays * 86_400_000 });
+    console.log(dim(`removed ${removed.length} worktree(s) older than ${gcDays}d`));
+    for (const path of removed) console.log(dim(`  ${path}`));
+  }
+
+  const entries = await listWorktrees(repo);
+  // `git worktree list` emits forward slashes even on Windows; compare resolved paths.
+  const agentWorktrees = entries.filter((entry) => resolve(entry.path) !== resolve(repo));
+  if (agentWorktrees.length === 0) {
+    console.log(dim("no agent worktrees (only the main checkout)"));
+    return;
+  }
+
+  const rows = agentWorktrees.map((entry) => [
+    relative(repo, resolve(entry.path)).split(sep).join("/"),
+    entry.head?.slice(0, 8) ?? "-",
+  ]);
+  const header = ["worktree", "head"];
+  const widths = header.map((cell, index) =>
+    Math.max(cell.length, ...rows.map((row) => (row[index] ?? "").length)),
+  );
+  const line = (cells: readonly string[]): string =>
+    cells.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join("  ");
+
+  console.log(line(header));
+  console.log(widths.map((width) => "-".repeat(width)).join("  "));
+  for (const row of rows) console.log(line(row));
+  console.log(dim(`\n${rows.length} worktree(s) · gc: pnpm dev worktrees --gc 7`));
+}
+
 async function showItems(threadId: string | undefined): Promise<void> {
   if (threadId === undefined) {
     console.error(red("usage: items <thread>"));
@@ -655,12 +792,17 @@ function usage(): void {
       "  sessions                                   list recorded sessions",
       "  items <thread>                             print the Thread/Turn/Item view",
       "  audit [thread]                             what ran, where, approved or not",
+      "  history [--limit N]                        recorded eval runs: pass rate, cost, latency",
+      "  worktrees [--gc <days>]                    list per-session worktrees; gc stale ones",
       "  replay <file.events.ndjson>                re-print a recorded event stream",
       "",
       "  --store jsonl|sqlite   where sessions live (default jsonl; sqlite is opt-in until the UI needs queries)",
       "  --scenario media|coding  which tool set + policy to ship (default media: 7 tools instead of 13)",
       "  --summarize [--summarize-at <tokens>]  compress old turns into a summary when the request is large (default 24k)",
       "  --worktree             run in an isolated git worktree (runs/worktrees/<thread>)",
+      "",
+      "  eval flags: --live (real model), --record (append to runs/eval-history.ndjson),",
+      "              --context-tokens N (shrink the request window), --summarize (A/B compression)",
       "",
       "Every live turn writes an event trace to runs/sessions/<thread>.events.ndjson.",
       "Sessions live in runs/sessions/ (jsonl) or runs/sessions/sessions.db (sqlite). Both are gitignored.",
@@ -677,6 +819,9 @@ interface ParsedArgs {
   readonly store?: string;
   readonly scenario?: string;
   readonly summarizeAt?: number;
+  readonly contextTokens?: number;
+  readonly limit?: number;
+  readonly gcDays?: number;
   readonly maxSteps?: number;
 }
 
@@ -692,6 +837,9 @@ function parseArgs(args: readonly string[]): ParsedArgs {
   let storeKindArg: string | undefined;
   let scenarioArg: string | undefined;
   let summarizeAt: number | undefined;
+  let contextTokens: number | undefined;
+  let limit: number | undefined;
+  let gcDays: number | undefined;
   let maxSteps: number | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -732,6 +880,33 @@ function parseArgs(args: readonly string[]): ParsedArgs {
       summarizeAt = Number(arg.slice("--summarize-at=".length));
       continue;
     }
+    if (arg === "--context-tokens") {
+      contextTokens = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--context-tokens=")) {
+      contextTokens = Number(arg.slice("--context-tokens=".length));
+      continue;
+    }
+    if (arg === "--limit") {
+      limit = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--limit=")) {
+      limit = Number(arg.slice("--limit=".length));
+      continue;
+    }
+    if (arg === "--gc") {
+      gcDays = Number(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--gc=")) {
+      gcDays = Number(arg.slice("--gc=".length));
+      continue;
+    }
     if (arg === "--max-steps") {
       maxSteps = Number(args[index + 1]);
       index += 1;
@@ -755,6 +930,9 @@ function parseArgs(args: readonly string[]): ParsedArgs {
     ...(storeKindArg !== undefined ? { store: storeKindArg } : {}),
     ...(scenarioArg !== undefined ? { scenario: scenarioArg } : {}),
     ...(summarizeAt !== undefined && Number.isFinite(summarizeAt) ? { summarizeAt } : {}),
+    ...(contextTokens !== undefined && Number.isFinite(contextTokens) ? { contextTokens } : {}),
+    ...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
+    ...(gcDays !== undefined && Number.isFinite(gcDays) ? { gcDays } : {}),
     ...(maxSteps !== undefined && Number.isFinite(maxSteps) ? { maxSteps } : {}),
   };
 }
@@ -764,9 +942,11 @@ const KNOWN_COMMANDS = new Set([
   "chat",
   "demo",
   "eval",
+  "history",
   "sessions",
   "items",
   "audit",
+  "worktrees",
   "replay",
   "help",
 ]);
@@ -824,7 +1004,22 @@ async function main(): Promise<void> {
   }
 
   if (command === "eval") {
-    await runEval(flags.includes("--live"));
+    await runEval(flags.includes("--live"), {
+      record: flags.includes("--record"),
+      summarize: flags.includes("--summarize"),
+      ...(parsed.contextTokens !== undefined ? { contextTokens: parsed.contextTokens } : {}),
+      ...(parsed.summarizeAt !== undefined ? { summarizeAt: parsed.summarizeAt } : {}),
+    });
+    return;
+  }
+
+  if (command === "history") {
+    await showHistory(parsed.limit ?? 15);
+    return;
+  }
+
+  if (command === "worktrees") {
+    await handleWorktrees(parsed.gcDays);
     return;
   }
 

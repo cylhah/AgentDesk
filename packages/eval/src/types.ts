@@ -39,5 +39,6 @@ export interface CaseResult {
   readonly steps: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  readonly durationMs: number;
   readonly failures: readonly string[];
 }

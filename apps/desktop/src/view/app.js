@@ -21,6 +21,9 @@ const dot = document.getElementById("dot");
 const conn = document.getElementById("conn");
 const seqinfo = document.getElementById("seqinfo");
 const tokensEl = document.getElementById("tokens");
+const metricsEl = document.getElementById("metrics");
+const metricsBody = document.getElementById("metrics-body");
+const metricsToggle = document.getElementById("metrics-toggle");
 
 let lastSeq = 0;
 let tokens = 0;
@@ -290,6 +293,108 @@ async function loadSession(threadId) {
   }
 }
 
+/** Recorded eval runs: pass rate, cost and latency — the "three tables", in one place. */
+function renderMetrics(runs) {
+  metricsBody.replaceChildren();
+
+  if (!runs || runs.length === 0) {
+    metricsBody.append(
+      el("div", "empty", "还没有记录。跑 pnpm eval --live --record，然后回来点「度量」。"),
+    );
+    return;
+  }
+
+  const maxTokens = Math.max(
+    ...runs.map((run) => run.summary.inputTokens + run.summary.outputTokens),
+    1,
+  );
+  const table = el("table");
+  const head = el("tr");
+  for (const label of ["时间", "模型", "通过", "tokens", "p50", "flags"]) {
+    head.append(el("th", null, label));
+  }
+  table.append(head);
+
+  for (const run of [...runs].reverse()) {
+    const tokens = run.summary.inputTokens + run.summary.outputTokens;
+    const row = el("tr");
+    row.append(
+      el("td", null, new Date(run.ts).toISOString().slice(5, 16).replace("T", " ")),
+      el("td", null, run.model.replace("openai:", "")),
+      el(
+        "td",
+        run.summary.passed === run.summary.total ? "pass" : "fail",
+        `${run.summary.passed}/${run.summary.total}`,
+      ),
+    );
+    const tokenCell = el("td");
+    const bar = el("span", "bar");
+    bar.style.width = `${Math.max(4, Math.round((tokens / maxTokens) * 60))}px`;
+    tokenCell.append(bar, document.createTextNode(tokens.toLocaleString()));
+    row.append(tokenCell);
+    row.append(el("td", null, `${run.summary.p50Ms}ms`));
+    row.append(
+      el(
+        "td",
+        "note",
+        [
+          run.live ? "live" : "scripted",
+          run.flags?.maxContextTokens !== undefined ? `ctx=${run.flags.maxContextTokens}` : "",
+          run.flags?.summarize === true ? "summarize" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      ),
+    );
+    table.append(row);
+  }
+  metricsBody.append(table);
+
+  const latest = runs[runs.length - 1];
+  metricsBody.append(el("h2", null, `最近一次（${new Date(latest.ts).toISOString().slice(0, 16).replace("T", " ")}）`));
+  const detail = el("table");
+  const dhead = el("tr");
+  for (const label of ["case", "结果", "steps", "tokens", "耗时"]) dhead.append(el("th", null, label));
+  detail.append(dhead);
+  for (const entry of latest.cases) {
+    const row = el("tr");
+    row.append(
+      el("td", null, entry.id),
+      el("td", entry.ok ? "pass" : "fail", entry.ok ? "PASS" : "FAIL"),
+      el("td", null, String(entry.steps)),
+      el("td", null, String(entry.inputTokens + entry.outputTokens)),
+      el("td", null, `${entry.durationMs}ms`),
+    );
+    detail.append(row);
+  }
+  metricsBody.append(detail);
+}
+
+async function toggleMetrics() {
+  if (!metricsEl.hidden) {
+    metricsEl.hidden = true;
+    timeline.hidden = false;
+    metricsToggle.textContent = "度量";
+    return;
+  }
+
+  metricsToggle.disabled = true;
+  try {
+    const runs = await rpc("eval.history", { limit: 20 });
+    renderMetrics(runs);
+    metricsEl.hidden = false;
+    timeline.hidden = true;
+    metricsToggle.textContent = "时间线";
+  } catch (error) {
+    metricsBody.replaceChildren(el("div", "empty bad", `读取评测历史失败：${error.message}`));
+    metricsEl.hidden = false;
+    timeline.hidden = true;
+    metricsToggle.textContent = "时间线";
+  } finally {
+    metricsToggle.disabled = false;
+  }
+}
+
 async function bootstrap() {
   // Inside the shell the host runs local-only with --no-auth, and the preload
   // is the privileged surface. In a browser, a token is required.
@@ -307,6 +412,7 @@ async function bootstrap() {
 
   connect();
   void loadSessions();
+  metricsToggle?.addEventListener("click", () => void toggleMetrics());
 
   if (shell) {
     try {

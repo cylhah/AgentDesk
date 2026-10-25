@@ -233,24 +233,54 @@ pending 清空        null
 
 **为什么拖到 Week 6 才装**：这台机器上没法自动化验证 GUI，Electron 的二进制（~100MB）下载还会把「跑不起来」变成主线风险。所以先把容器无关的那层做完（契约、事件流、bridge、HMI），最后才接壳。真正的意外是网络：默认从 GitHub 下载失败（`fetch failed`），换 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 才装上——这一步值得记，换台机器照做即可。
 
-## 待办（Week 7）
+## 度量与回归
 
-Week 6 已完成：
+```bash
+pnpm eval --live --record                        # 跑一次，落一份历史
+pnpm dev history                                 # 通过率 / 成本 / 延迟 / 条件
+pnpm eval --live --record --context-tokens 400   # 压缩 A/B：把请求窗口压到 400 tokens
+```
 
-- [x] 流式输出：`ModelProvider.stream?`，SSE 分片重组（文本 delta + 按 index 拼装 tool_calls），不重试已展示的字节
-- [x] 宿主 token 鉴权：`/events` 与 `/api/rpc` 401，静态资源与 `/health` 公开
-- [x] 审批 UI：看板按钮 → `turn.resolve` → 原地 `resume`，不是重跑
-- [x] 通道型 bridge 传输（Electron / WebView2 / CEF 的接入形状）+ 测试
-- [x] **Electron 外壳**：沙箱窗口 + preload 两方法；宿主作为子进程被拉起，代码零改动
-- [x] `--run "<task>"`：宿主内跑一轮并 parked，方便演示与手测
-- [x] 修掉 `ELECTRON_RUN_AS_NODE` 继承导致 Electron 退化成 Node 的坑（`launch.cjs`）
+看板右上角的「度量」按钮读的是**同一份** `runs/eval-history.ndjson`——命令行和 GUI 不会出现两套数字。
 
-Week 7 开始（度量与回归）：
+```
+when         model          pass  tokens  p50     flags
+10-25 09:37  deepseek-chat  5/5   13888   2252ms  live
+10-25 09:37  deepseek-chat  5/5   13880   1999ms  live ctx=400
+10-25 09:37  deepseek-chat  5/5   13551   2107ms  live ctx=1
+```
 
-- [ ] eval 回归：同样的 5 条用例可重复跑，记录历史（现在是一次性手跑）
-- [ ] 成本/延迟/成功率三张表，接看板
-- [ ] worktree GC 策略
-- [ ] 压缩前后对比进 eval（成功率是否下降）
+`flags` 列不是装饰：**同一个 5/5 在不同条件下不是同一个结论**。这次三个数字几乎一样，原因很具体——
+
+- 夹具只有 2–6 条消息，而压缩针对的是消息历史；工具 schema（~1k tokens）不在它的统计范围里。
+- 所以 `ctx=400` 甚至 `ctx=1` 都没有真正触发截断，5/5 只能说明"没有被压坏"，不能说明"压缩无害"。
+- 压缩的真实效果在 Week 3 的长会话实验里：80 条消息 → 117 tokens 摘要，下一轮请求 21k → 1.2k。
+
+**结论**：度量管线通了，但 A/B 需要一个**长历史夹具**才有效。这条记进 Week 8 待办，而不是含糊地写"压缩前后 5/5 → 5/5，无影响"。
+
+worktree 也有了回收：
+
+```bash
+pnpm dev worktrees           # 列出每个会话的 worktree
+pnpm dev worktrees --gc 7    # 删掉 7 天没动过的（只动 runs/worktrees/ 下的）
+```
+
+## 待办（Week 8）
+
+Week 7 已完成：
+
+- [x] eval 历史：`--record` 追加 NDJSON（通过率/成本/延迟/条件），`pnpm dev history` 读回
+- [x] 看板「度量」：同一份历史的表格 + 最近一次的分 case 明细
+- [x] 压缩 A/B 的**管线**（`--context-tokens`），并测出"现夹具太短、测不出差异"这个结论
+- [x] worktree GC：`worktrees [--gc <days>]`，只删 `runs/worktrees/` 下的
+- [x] 测试：118 passed（新增 eval history 5 / worktree gc 3）
+
+Week 8 开始：
+
+- [ ] 长历史夹具：一个"50 轮后仍能正确指代"的 case，让压缩 A/B 真正有对照
+- [ ] 成本/延迟趋势图（不只是表格）
+- [ ] 看板展示 pending 队列（多个待审批而不是一个）
+- [ ] 打包（Electron 安装包）与首次运行引导
 
 ## 设计文档
 
