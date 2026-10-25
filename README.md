@@ -1,8 +1,8 @@
 # AgentDesk
 
-本机执行、云端管控的 Agent 运行平台。第一个落地场景：**座舱媒体 Agent**。
+座舱媒体 Agent：用自然语言完成点播、切歌、音量与车窗等操作。Agent 在本机执行，高危操作先停、后确认、再执行，每一步都留痕。
 
-> 状态：Week 1 完成（真实模型已接通、6 个文件/Shell 工具可用），并在 `deepseek-chat` 上拿到首个 live baseline。下一步见 `docs/roadmap.md`。
+> 状态：agent 内核、审批闸门、上下文治理、评测与 Electron 看板已就绪；座舱媒体工具目前是 **mock 适配器**（内存曲库），真实播放器接入尚未实现。
 
 ## 为什么不是"又一个 AI 聊天框"
 
@@ -15,11 +15,11 @@
 
 ```bash
 pnpm install
-pnpm verify                                # build + 100 tests + eval 5/5 + demo，全离线
+pnpm verify                                # build + 124 tests + eval 5/5 + demo，全离线
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 100 个单元测试
+pnpm test                                  # 124 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
@@ -35,11 +35,12 @@ pnpm dev audit                             # 审计：工具、批准、token
 pnpm dev replay runs/sessions/<id>.events.ndjson    # 回放事件流
 pnpm dev eval --live                       # 用真实模型跑夹具，会花钱
 pnpm ui --replay <thread>                  # 看板 → http://127.0.0.1:4780
+pnpm ui --run "把车窗打开"                  # 启动一轮并停在审批，在界面里决定
+pnpm ui:electron                           # Electron 外壳（沙箱窗口 + preload 桥）
+pnpm package                               # 便携版 → dist/AgentDesk/
 ```
 
-**完整的运行与验证清单**（每一层的预期输出、排错表）：[docs/verify.md](./docs/verify.md)
-# 以上都可加 --store sqlite，落 runs/sessions/sessions.db
-```
+以上命令都可加 `--store sqlite`，落 `runs/sessions/sessions.db`。
 
 预期输出（demo，节选）：
 
@@ -62,16 +63,20 @@ user 放周杰伦的晴天
 
 ```
 apps/
-  cli/       当前唯一宿主：跑 demo / eval（Week 5 起补 desktop / web / gateway）
+  cli/       CLI 宿主：demo / eval / run / chat / replay / audit
+  desktop/   桌面宿主 + HMI + Electron 外壳
 packages/
   protocol/  事件、消息、工具契约（zod）
   runtime/   agent loop、provider 抽象、审批闸门、压缩（结构性 + 摘要）
-  store/     会话落盘：JSONL（默认，可 grep）+ SQLite（可查询），同一契约
-  tools/     fs_* / shell_run + 媒体域 mock + 场景（media|coding = 工具集 + 策略）
-  eval/      夹具执行器 + 指标表
+  store/     会话落盘：JSONL（默认，可 grep）+ SQLite（可查询），审计日志
+  tools/     fs_* / shell_run + 座舱媒体工具（mock 适配器）+ 场景定义
+  eval/      夹具执行器 + 历史记录（NDJSON）
+  bridge/    请求-响应契约：视图 ↔ 宿主
+  eventstream/  事件序号、重放、SSE 帧
+  workspace/ git worktree 隔离与回收
 fixtures/    评测用例（JSON）
+scripts/     便携打包
 runs/        会话与事件流（gitignored，跑一次生成一次）
-docs/        ADR、harness 拆解问题清单、路线图
 ```
 
 ## 工具
@@ -311,26 +316,3 @@ pnpm package      # → dist/AgentDesk/（含 AgentDesk.cmd）
 
 实测（打包版）：窗口标题 `AgentDesk · 座舱媒体`；`/health` 正常；`host.info` 显示
 `providerConfigured: true`（读到了同目录的 `.env`），`store` 指向 `dist/AgentDesk/runs/sessions`。
-
-## 待办（Week 10）
-
-Week 9 已完成：
-
-- [x] 多 pending 审批队列：一次步骤内全部 park，逐项选择 + 一次提交，宿主拒绝部分提交
-- [x] 看板审批写审计（此前只有 CLI 写，宿主这条路径是漏的）
-- [x] 便携打包 `pnpm package`：bundle 宿主（esbuild）、沙箱窗口、启动脚本、README
-- [x] 首次运行：`.env` 支持 + 缺 key 提示条
-- [x] 测试：119 passed
-
-Week 10 开始：
-
-- [ ] 安装包（NSIS / 代码签名）与自动更新
-- [ ] worktree 与 dist 的清理策略（打包产物会累积）
-- [ ] demo 视频脚本 + 3 篇文章提纲
-- [ ] 简历 bullet 用真实数字回填（成功率 / 成本 / 延迟 / 裁剪对照）
-
-## 设计文档
-
-- [项目上下文（新人/新会话先读这个）](./docs/CONTEXT.md)
-- [ADR-001 架构与分层](./docs/adr-001-architecture.md)
-- [读 harness 时要回答的 6 个问题](./docs/harness-questions.md)
