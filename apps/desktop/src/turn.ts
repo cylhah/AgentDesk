@@ -214,6 +214,16 @@ export class TurnRunner {
       reason: result.reason,
       tokens: { input: this.usage.inputTokens, output: this.usage.outputTokens },
     });
+
+    // `turn.end` is emitted by the loop *before* anything is written to disk.
+    // Announce the write separately so a dashboard refresh cannot race it and
+    // show "0 turns" for a session that just finished.
+    this.options.broker.publish({
+      type: "turn.persisted",
+      turnId,
+      reason: result.reason,
+      ts: Date.now(),
+    });
     this.turnId = null;
   }
 

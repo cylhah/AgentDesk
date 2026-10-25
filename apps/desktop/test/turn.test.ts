@@ -90,6 +90,24 @@ describe("TurnRunner threading", () => {
     expect(resumed.reason).toBe("completed");
   });
 
+  it("announces persistence after the write, not before", async () => {
+    const events: AgentEvent[] = [];
+    broker.subscribe((frame) => events.push(frame.event));
+
+    const turn = runner();
+    await turn.start("放首歌");
+
+    const endIndex = events.findIndex((event) => event.type === "turn.end");
+    const persistedIndex = events.findIndex((event) => event.type === "turn.persisted");
+    expect(endIndex).toBeGreaterThanOrEqual(0);
+    expect(persistedIndex).toBeGreaterThan(endIndex);
+
+    // By the time `turn.persisted` fires, the store already counts the turn —
+    // this is what stops the sidebar from showing "0 turns" after a turn.
+    const sessions = await store.list();
+    expect(sessions[0]?.turns).toBe(1);
+  });
+
   it("records every turn of a thread in the event trace", async () => {
     const events: AgentEvent[] = [];
     broker.subscribe((frame) => events.push(frame.event));

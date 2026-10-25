@@ -42,6 +42,11 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
     durationMs: z.number().nonnegative(),
   }),
   z.object({
+    type: z.literal("turn.persisted"),
+    ...base,
+    reason: TurnEndReasonSchema,
+  }),
+  z.object({
     type: z.literal("tool.approval_required"),
     ...base,
     callId: z.string(),

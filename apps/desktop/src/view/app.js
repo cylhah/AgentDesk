@@ -175,7 +175,11 @@ function renderEvent(event) {
       const line = el("div", "end");
       line.append(el("span", "tag", "⏹ "), el("span", "reason", event.reason));
       append(line);
-      // A turn just landed in the current thread: refresh turn counts in the sidebar.
+      break;
+    }
+    case "turn.persisted": {
+      // Emitted *after* the host wrote the turn; refreshing on `turn.end` raced
+      // the write and showed a just-finished session with 0 turns.
       void loadSessions();
       break;
     }
@@ -502,6 +506,9 @@ async function submitTask(event) {
   try {
     await rpc("turn.start", { task });
     runTask.value = "";
+    // Also refresh here: `turn.persisted` covers SSE viewers, this covers the
+    // caller even if it missed the frame (e.g. reconnect window).
+    void loadSessions();
   } catch (error) {
     append(el("div", "note bad", `启动失败：${error.message}`));
   } finally {
