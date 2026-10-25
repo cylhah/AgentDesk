@@ -216,9 +216,16 @@ host（Node；由 Electron 主进程或终端拉起）
 - **重连靠序号**：`EventSource` 自动带 `Last-Event-ID`，宿主用 `since` 精确补发；如果请求的区间已被缓冲区淘汰，会写一条 `: gap after N` 注释而不是假装完整。
 - **本机不是边界**：`/events` 和 `/api/rpc` 要 token（终端打印），静态文件与 `/health` 公开。token 走 `Authorization: Bearer` 或 `?token=`（`EventSource` 不能设 header）。
 
-**看板能做的唯一写操作是「决定一个已经停下的审批」**：宿主用 `--run` 启动一轮，遇到 `confirm` 工具就停在 `awaiting_approval`；看板出现「批准 / 拒绝」按钮，点了走 `turn.resolve`，宿主用 Week 4 的 `resume { callId, decision }` **原地继续同一个 turn**。视图不能提交任务。
+**看板能做两件事**：
 
-**流式**：`--run` 走 provider 的 `stream()`，`message.delta` 逐字进 SSE，看板是打字机效果。实测一次「把车窗打开（拒绝）」产生 **10 个 delta 帧**，最终 `message.complete` 与 `turn.end` 正常。
+1. **发起一轮任务**（仅桌面宿主）：顶部输入框回车，走 `turn.start`。坐在机器前的人就是运维者，
+   等同于在终端敲 `pnpm dev run "…"`——视图自己仍然不能调用任何工具。
+2. **决定一个已经停下的审批**：`confirm` 工具会让回合停在 `awaiting_approval`，看板出现「批准 / 拒绝」，
+   点了走 `turn.resolve`，宿主用 `resume { decisions }` **原地继续同一个 turn**。
+
+远程网关（多机部署）仍然只读：`turn.start` 只在本机宿主里注册。
+
+**流式**：宿主跑轮次时走 provider 的 `stream()`，`message.delta` 逐字进 SSE，看板是打字机效果。实测一次「把车窗打开（拒绝）」产生 **10 个 delta 帧**，最终 `message.complete` 与 `turn.end` 正常。
 
 实测（Week 6 冒烟，`pnpm ui --run "把车窗打开"`）：
 

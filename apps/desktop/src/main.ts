@@ -138,17 +138,16 @@ const store =
 const broker = new EventBroker();
 const scenario = resolveScenario(args.scenario);
 
-const runner =
-  args.run !== undefined
-    ? new TurnRunner({
-        store,
-        broker,
-        scenario,
-        cwd: process.cwd(),
-        summarize: true,
-        audit: new AuditLog(resolve("runs/audit.ndjson")),
-      })
-    : undefined;
+/** Created on the first `turn.start`; a host without a key still serves history. */
+const createRunner = (): TurnRunner =>
+  new TurnRunner({
+    store,
+    broker,
+    scenario,
+    cwd: process.cwd(),
+    summarize: true,
+    audit: new AuditLog(resolve("runs/audit.ndjson")),
+  });
 
 // Localhost is not a boundary: any local process can reach the port, so the
 // data endpoints require a token that only the terminal knows.
@@ -158,9 +157,9 @@ const server = await startHostServer({
   store,
   broker,
   port: args.port,
+  createRunner,
   ...(args.replay !== undefined ? { currentThreadId: args.replay } : {}),
   ...(token !== undefined ? { token } : {}),
-  ...(runner !== undefined ? { runner } : {}),
 }).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("EADDRINUSE")) {
@@ -180,14 +179,15 @@ console.log(
 
 if (args.run !== undefined) {
   console.log(`running turn: ${args.run}`);
-  runner
-    ?.start(args.run)
+  server
+    .startTurn(args.run)
     .then((state) => {
-      if (state.pending.length > 0) {
-        const names = state.pending.map((entry) => entry.name).join(", ");
+      const turn = state as { pending: readonly { name: string }[]; reason: string | null };
+      if (turn.pending.length > 0) {
+        const names = turn.pending.map((entry) => entry.name).join(", ");
         console.log(`parked for approval: ${names} — approve them in the dashboard`);
       } else {
-        console.log(`turn finished: ${state.reason ?? "unknown"}`);
+        console.log(`turn finished: ${turn.reason ?? "unknown"}`);
       }
     })
     .catch((error: unknown) => {

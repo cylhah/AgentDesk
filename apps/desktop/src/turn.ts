@@ -65,6 +65,9 @@ export class TurnRunner {
   }
 
   async start(task: string): Promise<TurnState> {
+    if (this.turnId !== null) {
+      throw new Error("a turn is already in progress — settle or finish it first");
+    }
     const threadId = newId("thread");
     const turnId = newId("turn");
     this.threadId = threadId;

@@ -20,13 +20,18 @@ export interface HostServerOptions {
    * Localhost is not a security boundary — any local process can connect.
    */
   readonly token?: string;
-  /** Present when the host was started with `--run`: enables approval resolving. */
-  readonly runner?: TurnRunner;
+  /**
+   * Creates the turn runner on first use. Lazy on purpose: a host without a
+   * model key must still serve history and replay; only *starting* a turn fails.
+   */
+  readonly createRunner?: () => TurnRunner;
 }
 
 export interface HostServer {
   readonly url: string;
   close(): Promise<void>;
+  /** Starts a turn from a host-side caller (`--run`, or a smoke test). */
+  startTurn(task: string): Promise<unknown>;
 }
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" } as const;
@@ -64,6 +69,16 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
   const { store, broker } = options;
   const port = options.port ?? 4780;
   const host = options.host ?? "127.0.0.1";
+
+  /** Lazily created; survives across requests so a parked turn can be resumed. */
+  let runner: TurnRunner | undefined;
+  const getRunner = (): TurnRunner => {
+    if (options.createRunner === undefined) {
+      throw new Error("this host cannot run turns");
+    }
+    runner ??= options.createRunner();
+    return runner;
+  };
 
   const viewDir = new URL("./view/", import.meta.url);
 
@@ -110,7 +125,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
 
         const call = new HttpBridgeCall();
         const bridge = createBridgeServer(
-          buildHandlers(store, broker, options.currentThreadId, options.runner),
+          buildHandlers(store, broker, options.currentThreadId, () => runner, getRunner),
           call.transport,
         );
         const result = await call.call({
@@ -151,6 +166,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
         server.close((error) => (error === undefined ? resolve() : reject(error)));
       });
     },
+    startTurn: async (task: string) => await getRunner().start(task),
   };
 }
 
@@ -206,14 +222,15 @@ function buildHandlers(
   store: SessionStore,
   broker: EventBroker,
   currentThreadId: string | undefined,
-  runner: TurnRunner | undefined,
+  peekRunner: () => TurnRunner | undefined,
+  getRunner: () => TurnRunner,
 ): Record<string, (params: unknown) => Promise<unknown>> {
   return {
     "host.info": async () => ({
       lastSeq: broker.lastSeq,
       store: store.describe(),
       currentThreadId: currentThreadId ?? null,
-      /** First-run hint: without a key, `--run` fails before any turn starts. */
+      /** First-run hint: without a key, starting a turn fails. */
       providerConfigured:
         (process.env.OPENAI_API_KEY ?? process.env.DEEPSEEK_API_KEY) !== undefined,
     }),
@@ -240,10 +257,21 @@ function buildHandlers(
       }));
     },
 
-    // Present only when the host was started with `--run`. The view can resolve
-    // a parked batch; it still cannot submit a task.
+    /**
+     * Starts a turn. This is a *local desktop* host: the person at the machine is
+     * the operator, so typing a task is legitimate. Nothing else becomes
+     * reachable — the view still cannot execute arbitrary code or tools directly.
+     */
+    "turn.start": async (params) => {
+      const task = (params as { task?: unknown } | undefined)?.task;
+      if (typeof task !== "string" || task.trim().length === 0) {
+        throw new Error("task required");
+      }
+      return await getRunner().start(task.trim());
+    },
+
     "turn.state": async () =>
-      runner?.state() ?? { threadId: null, pending: [], reason: null },
+      peekRunner()?.state() ?? { threadId: null, pending: [], reason: null },
 
     /** Recorded eval runs: the dashboard's "three tables" (pass rate / cost / latency). */
     "eval.history": async (params) => {
@@ -253,7 +281,7 @@ function buildHandlers(
     },
 
     "turn.resolve": async (params) => {
-      if (runner === undefined) throw new Error("host was started without --run");
+      if (peekRunner() === undefined) throw new Error("no turn is running");
       const decisions = (params as { decisions?: unknown } | undefined)?.decisions;
       if (!Array.isArray(decisions) || decisions.length === 0) {
         throw new Error("decisions required: [{ callId, decision }]");
@@ -271,7 +299,7 @@ function buildHandlers(
           decision: candidate.decision as "approve" | "deny",
         };
       });
-      return await runner.resolve(parsed);
+      return await getRunner().resolve(parsed);
     },
   };
 }

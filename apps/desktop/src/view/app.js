@@ -24,6 +24,9 @@ const tokensEl = document.getElementById("tokens");
 const metricsEl = document.getElementById("metrics");
 const metricsBody = document.getElementById("metrics-body");
 const metricsToggle = document.getElementById("metrics-toggle");
+const runForm = document.getElementById("run-form");
+const runTask = document.getElementById("run-task");
+const runSubmit = document.getElementById("run-submit");
 
 let lastSeq = 0;
 let tokens = 0;
@@ -480,6 +483,32 @@ async function toggleMetrics() {
   }
 }
 
+/**
+ * Starting a turn from the dashboard is a desktop affordance: the person at the
+ * machine *is* the operator. The view still cannot call tools — it asks the host
+ * to run a task, exactly like `pnpm dev run "…"` does.
+ */
+async function submitTask(event) {
+  event.preventDefault();
+  const task = runTask.value.trim();
+  if (task.length === 0) return;
+
+  runTask.disabled = true;
+  runSubmit.disabled = true;
+  runSubmit.textContent = "运行中…";
+  try {
+    await rpc("turn.start", { task });
+    runTask.value = "";
+  } catch (error) {
+    append(el("div", "note bad", `启动失败：${error.message}`));
+  } finally {
+    runTask.disabled = false;
+    runSubmit.disabled = false;
+    runSubmit.textContent = "运行";
+    runTask.focus();
+  }
+}
+
 async function bootstrap() {
   // Inside the shell the host runs local-only with --no-auth, and the preload
   // is the privileged surface. In a browser, a token is required.
@@ -498,6 +527,7 @@ async function bootstrap() {
   connect();
   void loadSessions();
   metricsToggle?.addEventListener("click", () => void toggleMetrics());
+  runForm?.addEventListener("submit", (event) => void submitTask(event));
 
   if (shell) {
     try {

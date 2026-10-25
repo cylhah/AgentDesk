@@ -113,11 +113,24 @@
       @keyframes blink { 50% { opacity: 0; } }
       .end { font-family: var(--mono); font-size: 11px; color: var(--dim); }
       .end .reason { color: var(--text); }
+      .pane { display: flex; flex-direction: column; min-width: 0; }
+      .runbar {
+        display: flex; gap: 8px; align-items: center;
+        padding: 12px 24px; border-bottom: 1px solid var(--line);
+        background: rgba(10, 15, 22, 0.6);
+      }
+      .runbar input {
+        flex: 1; min-width: 0; padding: 8px 12px; font-size: 13px;
+        color: var(--text); background: #0e1620;
+        border: 1px solid var(--line); border-radius: 8px; outline: none;
+      }
+      .runbar input:focus { border-color: var(--accent); }
+      .runbar input:disabled { opacity: .6; }
     </style>
   </head>
   <body>
     <header>
-      <div class="brand">AgentDesk<span>座舱媒体 Agent · 只读看板</span></div>
+      <div class="brand">AgentDesk<span>座舱媒体 Agent · 本机宿主</span></div>
       <div class="status"><span id="dot" class="dot"></span><span id="conn">连接中…</span></div>
       <div class="meta">
         <button id="metrics-toggle" class="btn small" type="button">度量</button>
@@ -130,11 +143,23 @@
         <h2>会话</h2>
         <ul id="sessions"></ul>
       </aside>
-      <section id="timeline"><div class="empty">等待事件…（跑一轮 <code>pnpm dev run</code> 后刷新）</div></section>
-      <section id="metrics" hidden>
-        <h2>评测历史</h2>
-        <div id="metrics-body" class="empty">还没有记录。跑 <code>pnpm eval --live --record</code>。</div>
-      </section>
+      <div class="pane">
+        <form id="run-form" class="runbar">
+          <input
+            id="run-task"
+            placeholder="输入任务，例如：放周杰伦的晴天 ／ 把车窗打开"
+            autocomplete="off"
+          />
+          <button id="run-submit" class="btn" type="submit">运行</button>
+        </form>
+        <section id="timeline">
+          <div class="empty">输入一个任务开始，或从左侧选一个历史会话。</div>
+        </section>
+        <section id="metrics" hidden>
+          <h2>评测历史</h2>
+          <div id="metrics-body" class="empty">还没有记录。跑 <code>pnpm eval --live --record</code>。</div>
+        </section>
+      </div>
     </main>
     <script type="module" src="/app.js"></script>
   </body>
