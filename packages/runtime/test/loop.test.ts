@@ -203,8 +203,9 @@ describe("runTurn", () => {
     expect(
       second.messages.some((message) => message.role === "tool" && message.toolCallId === "c1"),
     ).toBe(true);
-    // Same turn, continued — not a new one.
+    // Same turn, continued — not a new one: no second turn.start.
     expect(second.turnId).toBe(first.turnId);
+    expect(events.some((event) => event.type === "turn.start")).toBe(false);
   });
 
   it("resumes a parked approval: deny feeds an error back instead of executing", async () => {
@@ -234,6 +235,65 @@ describe("runTurn", () => {
         (message) => message.role === "tool" && message.content.includes("denied"),
       ),
     ).toBe(true);
+  });
+
+  it("streams text deltas when the host asks for them, without duplicating the aggregate", async () => {
+    const provider: ModelProvider = {
+      id: "streamer",
+      async complete() {
+        return { text: "未使用", toolCalls: [] };
+      },
+      async stream(_req, onText) {
+        for (const delta of ["你", "好"]) onText(delta);
+        return { text: "你好", toolCalls: [], usage: { inputTokens: 5, outputTokens: 2 } };
+      },
+    };
+
+    const events: AgentEvent[] = [];
+    const result = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("hi"),
+      provider,
+      tools,
+      streaming: true,
+      onEvent: (event) => events.push(event),
+    });
+
+    const deltas = events.filter((event) => event.type === "message.delta");
+    expect(deltas.map((event) => (event.type === "message.delta" ? event.text : ""))).toEqual([
+      "你",
+      "好",
+    ]);
+    expect(
+      events.some((event) => event.type === "message.complete" && event.text === "你好"),
+    ).toBe(true);
+    expect(result.usage.inputTokens).toBe(5);
+  });
+
+  it("uses the batch path when streaming was not requested", async () => {
+    let streamed = false;
+    const provider: ModelProvider = {
+      id: "s",
+      async complete() {
+        return { text: "好", toolCalls: [] };
+      },
+      async stream() {
+        streamed = true;
+        return { text: "x", toolCalls: [] };
+      },
+    };
+
+    const events: AgentEvent[] = [];
+    await runTurn({
+      threadId: "thread_1",
+      messages: userSays("hi"),
+      provider,
+      tools,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(streamed).toBe(false);
+    expect(events.filter((event) => event.type === "message.delta")).toHaveLength(1);
   });
 
   it("fails loudly when asked to resume a call that is not pending", async () => {

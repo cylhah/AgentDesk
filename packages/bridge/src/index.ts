@@ -152,6 +152,8 @@ export function createBridgeServer(
   return { dispose: unsubscribe };
 }
 
+export * from "./channels";
+
 /** Two linked in-memory transports — used by tests and by the CLI demo host. */
 export function createLinkedTransports(): [BridgeTransport, BridgeTransport] {
   const aListeners = new Set<(message: BridgeMessage) => void>();

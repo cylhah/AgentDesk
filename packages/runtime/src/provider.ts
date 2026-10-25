@@ -31,4 +31,10 @@ export interface ModelUsage {
 export interface ModelProvider {
   readonly id: string;
   complete(req: CompletionRequest): Promise<AssistantTurn>;
+  /**
+   * Optional streaming path. `onText` is called for each text delta; the
+   * resolved turn contains the full text and the reassembled tool calls.
+   * The loop prefers this when the host wants to see progress.
+   */
+  stream?(req: CompletionRequest, onText: (delta: string) => void): Promise<AssistantTurn>;
 }

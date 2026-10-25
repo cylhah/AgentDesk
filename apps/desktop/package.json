@@ -7,6 +7,8 @@
     "@agentdesk/bridge": "workspace:*",
     "@agentdesk/eventstream": "workspace:*",
     "@agentdesk/protocol": "workspace:*",
-    "@agentdesk/store": "workspace:*"
+    "@agentdesk/runtime": "workspace:*",
+    "@agentdesk/store": "workspace:*",
+    "@agentdesk/tools": "workspace:*"
   }
 }

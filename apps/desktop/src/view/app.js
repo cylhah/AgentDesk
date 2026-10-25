@@ -8,6 +8,10 @@
  * this function, not the rendering.
  */
 
+const params = new URLSearchParams(location.search);
+const token = params.get("token") ?? sessionStorage.getItem("agentdesk:token") ?? "";
+if (params.get("token")) sessionStorage.setItem("agentdesk:token", params.get("token"));
+
 const timeline = document.getElementById("timeline");
 const sessionsEl = document.getElementById("sessions");
 const dot = document.getElementById("dot");
@@ -18,6 +22,7 @@ const tokensEl = document.getElementById("tokens");
 let lastSeq = 0;
 let tokens = 0;
 let stickToBottom = true;
+let liveBubble = null;
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -34,7 +39,10 @@ const short = (value, max = 160) => {
 async function rpc(method, params) {
   const response = await fetch("/api/rpc", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ method, params }),
   });
   const payload = await response.json();
@@ -65,14 +73,30 @@ function setConnection(state, text) {
 function renderEvent(event) {
   switch (event.type) {
     case "turn.start": {
+      liveBubble = null;
       append(el("div", "turn-divider", `turn ${event.turnId.slice(5, 13)}`));
+      break;
+    }
+    case "message.delta": {
+      if (!event.text) break;
+      if (!liveBubble) {
+        liveBubble = el("div", "bubble asst");
+        liveBubble.append(el("div", "tag", "assistant"), el("div", "live", ""));
+        append(liveBubble);
+      }
+      liveBubble.querySelector(".live").textContent += event.text;
       break;
     }
     case "message.complete": {
       if (!event.text) break;
-      const bubble = el("div", "bubble asst");
-      bubble.append(el("div", "tag", "assistant"), el("div", null, event.text));
-      append(bubble);
+      if (liveBubble) {
+        liveBubble.querySelector(".live").textContent = event.text;
+        liveBubble = null;
+      } else {
+        const bubble = el("div", "bubble asst");
+        bubble.append(el("div", "tag", "assistant"), el("div", null, event.text));
+        append(bubble);
+      }
       break;
     }
     case "tool.call": {
@@ -85,23 +109,22 @@ function renderEvent(event) {
       break;
     }
     case "tool.result": {
-      const card = timeline.querySelector(`.tool[data-call-id="${event.callId}"] .out`);
+      const out = timeline.querySelector(`.tool[data-call-id="${event.callId}"] .out`);
       const text = `${event.ok ? "✓" : "✗"} ${event.output.length > 400 ? `${event.output.slice(0, 400)}…` : event.output}`;
-      if (card) {
-        card.textContent = text;
-        card.classList.add(event.ok ? "ok" : "bad");
+      if (out) {
+        out.textContent = text;
+        out.classList.add(event.ok ? "ok" : "bad");
       } else {
         append(el("div", "note", text));
       }
       break;
     }
     case "tool.approval_required": {
-      const banner = el("div", "approval");
-      banner.textContent = `⏸ 需要确认：${event.name} ${short(event.args)}`;
-      append(banner);
+      showApproval(event.name, event.args);
       break;
     }
     case "tool.approval_resolved": {
+      document.getElementById("approval")?.remove();
       append(
         el(
           "div",
@@ -115,7 +138,11 @@ function renderEvent(event) {
       tokens += event.inputTokens + event.outputTokens;
       tokensEl.textContent = `${tokens.toLocaleString()} tokens`;
       append(
-        el("div", "note", `usage ${event.inputTokens} in / ${event.outputTokens} out${event.source ? ` (${event.source})` : ""}`),
+        el(
+          "div",
+          "note",
+          `usage ${event.inputTokens} in / ${event.outputTokens} out${event.source ? ` (${event.source})` : ""}`,
+        ),
       );
       break;
     }
@@ -139,8 +166,44 @@ function renderEvent(event) {
   }
 }
 
+/** The only write-ish action the view has: settle a call the host parked. */
+function showApproval(name, args) {
+  document.getElementById("approval")?.remove();
+
+  const panel = el("div", "approval");
+  panel.id = "approval";
+  panel.append(
+    el("div", null, `⏸ 需要确认：${name} ${short(args)}`),
+    el("div", "note", "批准后宿主会原地继续这个 turn（不是重跑）"),
+  );
+
+  const buttons = el("div", "approval-actions");
+  for (const [label, decision, cls] of [
+    ["批准", "approve", "ok"],
+    ["拒绝", "deny", "bad"],
+  ]) {
+    const button = el("button", `btn ${cls}`, label);
+    button.onclick = async () => {
+      panel.querySelectorAll("button").forEach((node) => {
+        node.disabled = true;
+      });
+      try {
+        await rpc("turn.resolve", { decision });
+      } catch (error) {
+        append(el("div", "note bad", `resolve 失败：${error.message}`));
+        panel.remove();
+      }
+    };
+    buttons.append(button);
+  }
+  panel.append(buttons);
+  append(panel);
+}
+
 function connect() {
-  const source = new EventSource(`/events?since=${lastSeq}`);
+  const query = new URLSearchParams({ since: String(lastSeq) });
+  if (token) query.set("token", token);
+  const source = new EventSource(`/events?${query.toString()}`);
 
   source.onopen = () => setConnection("online", "已连接 · SSE");
   source.onerror = () => setConnection("offline", "断开，自动重连…");
@@ -222,9 +285,29 @@ async function loadSession(threadId) {
   }
 }
 
-window.addEventListener("beforeunload", () => {
-  // EventSource closes itself; nothing else to release here.
-});
+async function bootstrap() {
+  if (!token) {
+    timeline.replaceChildren(
+      el(
+        "div",
+        "empty",
+        "缺少 token：请用终端里打印的 URL 打开（形如 http://127.0.0.1:4780/?token=…），或加 --no-auth 启动。",
+      ),
+    );
+    setConnection("offline", "未授权");
+    return;
+  }
 
-connect();
-void loadSessions();
+  connect();
+  void loadSessions();
+
+  // The page may open after a turn already parked — show the buttons anyway.
+  try {
+    const state = await rpc("turn.state");
+    if (state.pending) showApproval(state.pending.name, state.pending.args);
+  } catch {
+    // host started without --run: nothing to settle
+  }
+}
+
+void bootstrap();

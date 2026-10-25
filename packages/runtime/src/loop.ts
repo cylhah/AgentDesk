@@ -8,7 +8,7 @@ import {
   type ToolDef,
   type TurnEndReason,
 } from "@agentdesk/protocol";
-import type { ModelProvider } from "./provider";
+import type { CompletionRequest, ModelProvider } from "./provider";
 import { compactMessages, type CompactionOptions } from "./context";
 import { splitForSummary, summaryMessage, type Summarizer } from "./summarize";
 
@@ -49,6 +49,8 @@ export interface RunTurnInput {
   };
   /** Summary carried over from a previous turn — recomputing it costs a full extra request. */
   readonly priorSummary?: { readonly text: string; readonly frontier: number };
+  /** Ask the provider to stream text deltas (hosts with a UI set this). */
+  readonly streaming?: boolean;
   /**
    * Continue a turn that stopped at `awaiting_approval`.
    *
@@ -116,7 +118,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       ? { text: input.priorSummary.text, frontier: input.priorSummary.frontier }
       : undefined;
 
-  emit({ type: "turn.start", turnId, ts: now() });
+  // A resumed segment belongs to the same turn, so it must not announce a new one.
+  if (input.resume === undefined) {
+    emit({ type: "turn.start", turnId, ts: now() });
+  }
 
   // Settle a call that a previous run parked at `awaiting_approval`.
   // The assistant message holding the tool call is already in `messages`,
@@ -272,11 +277,22 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       });
     }
 
-    const turn = await input.provider.complete({
+    const request: CompletionRequest = {
       messages: compacted.messages,
       tools: input.tools.map(toToolSpec),
       ...(input.system !== undefined ? { system: input.system } : {}),
-    });
+    };
+
+    // Streaming is opt-in per host: a UI wants deltas, an eval run does not.
+    // ScriptedProvider has no `stream`, so fixtures keep exercising `complete`.
+    const streamed =
+      input.streaming === true && input.provider.stream !== undefined
+        ? await input.provider.stream(request, (delta) => {
+            emit({ type: "message.delta", turnId, text: delta, ts: now() });
+          })
+        : await input.provider.complete(request);
+
+    const turn = streamed;
 
     // Prefer the endpoint's own numbers: each request repays for the whole
     // prompt, so summing per-step usage is the actual bill, while the estimate
@@ -294,7 +310,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     }
 
     if (turn.text.length > 0) {
-      emit({ type: "message.delta", turnId, text: turn.text, ts: now() });
+      // Deltas were already emitted while streaming; only the aggregate remains.
+      if (input.streaming !== true) {
+        emit({ type: "message.delta", turnId, text: turn.text, ts: now() });
+      }
       emit({ type: "message.complete", turnId, text: turn.text, ts: now() });
     }
 

@@ -53,9 +53,15 @@ importers:
       '@agentdesk/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@agentdesk/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@agentdesk/store':
         specifier: workspace:*
         version: link:../../packages/store
+      '@agentdesk/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
 
   packages/bridge: {}
 

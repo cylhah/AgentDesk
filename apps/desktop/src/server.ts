@@ -1,9 +1,10 @@
 import { createServer, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import type { AgentEvent } from "@agentdesk/protocol";
-import type { BridgeMessage, BridgeRequest } from "@agentdesk/bridge";
+import { createBridgeServer, type BridgeMessage, type BridgeRequest } from "@agentdesk/bridge";
 import { SSE_HEADERS, toSseFrame, type EventBroker } from "@agentdesk/eventstream";
 import { deriveItems, type SessionStore } from "@agentdesk/store";
+import type { TurnRunner } from "./turn";
 
 export interface HostServerOptions {
   readonly store: SessionStore;
@@ -12,6 +13,14 @@ export interface HostServerOptions {
   readonly host?: string;
   /** Session shown by the HMI on load (usually the one being replayed). */
   readonly currentThreadId?: string;
+  /**
+   * When set, `/events` and `/api/rpc` require `Authorization: Bearer <token>`
+   * or `?token=`. Static assets and `/health` stay public: they carry no data.
+   * Localhost is not a security boundary — any local process can connect.
+   */
+  readonly token?: string;
+  /** Present when the host was started with `--run`: enables approval resolving. */
+  readonly runner?: TurnRunner;
 }
 
 export interface HostServer {
@@ -72,6 +81,10 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
       }
 
       if (url.pathname === "/events") {
+        if (!authorized(request, url, options.token)) {
+          response.writeHead(401, JSON_HEADERS).end(JSON.stringify({ ok: false, error: "unauthorized" }));
+          return;
+        }
         const lastEventId = request.headers["last-event-id"];
         streamEvents(
           Array.isArray(lastEventId) ? lastEventId[0] : lastEventId,
@@ -83,6 +96,10 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
       }
 
       if (url.pathname === "/api/rpc" && request.method === "POST") {
+        if (!authorized(request, url, options.token)) {
+          response.writeHead(401, JSON_HEADERS).end(JSON.stringify({ ok: false, error: "unauthorized" }));
+          return;
+        }
         const body = await readBody(request);
         const parsed = JSON.parse(body) as { method?: string; params?: unknown };
         if (typeof parsed.method !== "string") {
@@ -91,9 +108,8 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
         }
 
         const call = new HttpBridgeCall();
-        const { createBridgeServer } = await import("@agentdesk/bridge");
-        const server = createBridgeServer(
-          buildHandlers(store, broker, options.currentThreadId),
+        const bridge = createBridgeServer(
+          buildHandlers(store, broker, options.currentThreadId, options.runner),
           call.transport,
         );
         const result = await call.call({
@@ -102,7 +118,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
           method: parsed.method,
           params: parsed.params,
         });
-        server.dispose();
+        bridge.dispose();
         response.writeHead(200, JSON_HEADERS).end(JSON.stringify(result));
         return;
       }
@@ -189,6 +205,7 @@ function buildHandlers(
   store: SessionStore,
   broker: EventBroker,
   currentThreadId: string | undefined,
+  runner: TurnRunner | undefined,
 ): Record<string, (params: unknown) => Promise<unknown>> {
   return {
     "host.info": async () => ({
@@ -218,5 +235,29 @@ function buildHandlers(
         event: frame.event as AgentEvent,
       }));
     },
+
+    // Present only when the host was started with `--run`. The view can resolve
+    // a parked call; it still cannot submit a task.
+    "turn.state": async () => runner?.state() ?? { threadId: null, pending: null, reason: null },
+
+    "turn.resolve": async (params) => {
+      if (runner === undefined) throw new Error("host was started without --run");
+      const decision = (params as { decision?: string } | undefined)?.decision;
+      if (decision !== "approve" && decision !== "deny") {
+        throw new Error('decision must be "approve" or "deny"');
+      }
+      return await runner.resolve(decision);
+    },
   };
+}
+
+function authorized(
+  request: import("node:http").IncomingMessage,
+  url: URL,
+  token: string | undefined,
+): boolean {
+  if (token === undefined) return true;
+  const header = request.headers.authorization;
+  if (header === `Bearer ${token}`) return true;
+  return url.searchParams.get("token") === token;
 }

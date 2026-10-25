@@ -78,6 +78,18 @@
         border: 1px solid #4a3a12; background: #1d1707; color: var(--warn);
         border-radius: 10px; padding: 10px 12px; font-size: 13px;
       }
+      .approval-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .btn {
+        all: unset; cursor: pointer; padding: 6px 14px; border-radius: 8px;
+        border: 1px solid var(--line); background: #0e1620; font-size: 13px;
+      }
+      .btn:hover { border-color: var(--accent); }
+      .btn:disabled { opacity: .45; cursor: default; }
+      .btn.ok { border-color: #2a5a44; color: var(--ok); }
+      .btn.bad { border-color: #5a2a2a; color: var(--bad); }
+      .bubble .live { min-height: 1em; }
+      .bubble .live::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+      @keyframes blink { 50% { opacity: 0; } }
       .end { font-family: var(--mono); font-size: 11px; color: var(--dim); }
       .end .reason { color: var(--text); }
     </style>

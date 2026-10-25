@@ -184,9 +184,11 @@ time      thread        kind      what        decision  cost
 ## 宿主与看板
 
 ```bash
-pnpm ui                        # 启动宿主（默认 http://127.0.0.1:4780）
-pnpm ui --replay <thread>      # 回放一段录好的事件流，看板会逐事件播放
-pnpm ui --store sqlite         # 读 SQLite 会话
+pnpm ui                            # 启动宿主（默认 http://127.0.0.1:4780，带 token）
+pnpm ui --replay <thread>          # 回放一段录好的事件流
+pnpm ui --run "把车窗打开"          # 宿主跑一轮，审批在看板里点
+pnpm ui --store sqlite             # 读 SQLite 会话
+pnpm ui --no-auth                  # 关掉 token（本机自用）
 ```
 
 ```
@@ -194,42 +196,49 @@ view（浏览器 / CEF / Electron renderer）
    ├── GET  /events?since=N   SSE：带序号的事件流，断线重连只补缺口
    └── POST /api/rpc          bridge 契约：只有注册过的方法可达
 host（Node 今天；Electron main / native 明天）
-   └── store · broker · handlers（只读）
+   └── store · broker · handlers
 ```
 
-三条约束写在代码里，不是写在文档里：
+四条约束写在代码里，不是写在文档里：
 
 - **view 只消费 `AgentEvent`**，不认识 provider、工具或磁盘。
 - **特权操作全走 bridge**：未注册的方法直接被拒，handler 抛错变成错误字符串（不跨边界抛异常），没人回应的调用会超时而不是挂死。
 - **重连靠序号**：`EventSource` 自动带 `Last-Event-ID`，宿主用 `since` 精确补发；如果请求的区间已被缓冲区淘汰，会写一条 `: gap after N` 注释而不是假装完整。
+- **本机不是边界**：`/events` 和 `/api/rpc` 要 token（终端打印），静态文件与 `/health` 公开。token 走 `Authorization: Bearer` 或 `?token=`（`EventSource` 不能设 header）。
 
-实测（`pnpm ui --replay <thread>` + 一个 Node 客户端）：
+**看板能做的唯一写操作是「决定一个已经停下的审批」**：宿主用 `--run` 启动一轮，遇到 `confirm` 工具就停在 `awaiting_approval`；看板出现「批准 / 拒绝」按钮，点了走 `turn.resolve`，宿主用 Week 4 的 `resume { callId, decision }` **原地继续同一个 turn**。视图不能提交任务。
+
+**流式**：`--run` 走 provider 的 `stream()`，`message.delta` 逐字进 SSE，看板是打字机效果。实测一次「把车窗打开（拒绝）」产生 **10 个 delta 帧**，最终 `message.complete` 与 `turn.end` 正常。
+
+实测（Week 6 冒烟，`pnpm ui --run "把车窗打开"`）：
 
 ```
-health            { ok: true, lastSeq: 12 }
-rpc session.list  16 个会话
-SSE               12 帧，seq 1..12，类型覆盖 turn/tool/usage/approval
-reconnect(12)     0 帧（没有重复投递）
+rpc 无 token        401
+SSE 无 token        401
+rpc 带 token        200
+启动时 parked       set_window {"action":"open"}
+点「拒绝」后事件     tool.approval_resolved → 10×message.delta → message.complete → turn.end completed
+pending 清空        null
 ```
 
-**为什么先不做 Electron**：这台机器上没法验证 GUI（也没法在 CI 里截图），Electron 的二进制下载还会把「跑不起来」的风险引进主线。宿主与视图的契约、事件流、bridge、HMI 都与容器无关——换 Electron/CEF 时只替换 `/events` 的投递方式和 `/api/rpc` 的传输（`ipcRenderer` / `window.cefBridge`），渲染层与协议一行不变。
+**为什么还没装 Electron**：这台机器上没法验证 GUI（也没法在 CI 里截图），Electron 的二进制下载还会把「跑不起来」的风险引进主线。宿主与视图的契约、事件流、bridge、HMI 都与容器无关——`packages/bridge` 已经提供**通道型传输**（`createHostTransport` / `createViewTransport`，就是 `ipcRenderer`、WebView2 `postMessage`、CEF 消息路由的形状），换容器只需要在两侧各接一次通道。
 
-## 待办（Week 6）
+## 待办（Week 7）
 
-Week 5 已完成：
+Week 6 已完成：
 
-- [x] 事件流：`EventBroker`（序号 + 环形缓冲 + `since` 补发 + 截断告警）
-- [x] SSE 推送 + 浏览器原生重连（`Last-Event-ID`）
-- [x] bridge 契约：请求/响应、未知方法拒绝、错误序列化、超时、dispose
-- [x] 只读 HMI：会话列表、事件时间线、工具卡片、审批横幅、token 计数
-- [x] 宿主把「回放」当第一类功能（`--replay`），没有 key 也能演示
+- [x] 流式输出：`ModelProvider.stream?`，SSE 分片重组（文本 delta + 按 index 拼装 tool_calls），不重试已展示的字节
+- [x] 宿主 token 鉴权：`/events` 与 `/api/rpc` 401，静态资源与 `/health` 公开
+- [x] 审批 UI：看板按钮 → `turn.resolve` → 原地 `resume`，不是重跑
+- [x] 通道型 bridge 传输（Electron / WebView2 / CEF 的接入形状）+ 测试
+- [x] `--run "<task>"`：宿主内跑一轮并parked，方便演示与手测
 
-Week 6 开始：
+Week 7 开始（度量与回归）：
 
-- [ ] Electron/CEF 外壳：同一个 HMI，换成 `ipcRenderer` / `window.cefBridge` 传输
-- [ ] 流式输出：provider 换成 SSE 流式，`message.delta` 逐字推
-- [ ] 宿主鉴权：现在 `127.0.0.1` 上没有任何认证（只读也要有）
-- [ ] worktree 的 GC 策略
+- [ ] eval 回归：同样的 5 条用例可重复跑，记录历史（现在是一次性手跑）
+- [ ] 成本/延迟/成功率三张表，接看板
+- [ ] worktree GC 策略
+- [ ] 压缩前后对比进 eval（成功率是否下降）
 
 ## 设计文档
 

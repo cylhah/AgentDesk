@@ -40,6 +40,48 @@ interface ChatCompletionResponse {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Yields the decoded JSON payload of each SSE `data:` line.
+ *
+ * Chunks split anywhere — mid-event, mid-JSON, between `\r\n` and `\n` — so the
+ * buffer is only consumed on a blank line. `[DONE]` ends the stream; malformed
+ * frames are skipped (a keep-alive comment must not kill the turn).
+ */
+async function* readSsePayloads(stream: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice("data:".length).trim();
+          if (data === "[DONE]") return;
+          if (data.length === 0) continue;
+          try {
+            yield JSON.parse(data) as unknown;
+          } catch {
+            // keep-alive or a partial frame; ignore
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function toWireMessages(
   messages: readonly Message[],
   system?: string,
@@ -148,6 +190,94 @@ export class OpenAIProvider implements ModelProvider {
               outputTokens: usage.completion_tokens,
             },
           }
+        : {}),
+    };
+  }
+
+  /**
+   * Streaming variant. Text arrives as deltas (`onText`), tool calls arrive as
+   * fragments that have to be reassembled by `index` — a tool call's JSON
+   * arguments are split across chunks at arbitrary character boundaries.
+   *
+   * No retry here on purpose: once bytes have been shown to the user, silently
+   * retrying would duplicate text. A mid-stream failure is surfaced as an error
+   * and the turn can be re-run deliberately.
+   */
+  async stream(
+    req: CompletionRequest,
+    onText: (delta: string) => void,
+  ): Promise<AssistantTurn> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: toWireMessages(req.messages, req.system),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (req.tools.length > 0) {
+      body.tools = toWireTools(req.tools);
+      body.tool_choice = "auto";
+    }
+
+    const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 400);
+      throw new Error(`upstream ${response.status}: ${detail}`);
+    }
+    if (response.body === null) {
+      throw new Error("streaming response has no body");
+    }
+
+    let text = "";
+    const calls = new Map<number, { id: string; name: string; args: string }>();
+    let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+
+    for await (const payload of readSsePayloads(response.body)) {
+      const parsed = payload as {
+        choices?: {
+          delta?: { content?: string | null; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] };
+        }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+
+      // DeepSeek/OpenAI send the usage chunk last, with an empty `choices`.
+      if (parsed.usage !== undefined) usage = parsed.usage;
+
+      for (const choice of parsed.choices ?? []) {
+        const delta = choice.delta;
+        if (delta?.content) {
+          text += delta.content;
+          onText(delta.content);
+        }
+        for (const call of delta?.tool_calls ?? []) {
+          const index = call.index ?? 0;
+          const current = calls.get(index) ?? { id: "", name: "", args: "" };
+          calls.set(index, {
+            id: call.id ?? current.id,
+            name: call.function?.name ?? current.name,
+            args: current.args + (call.function?.arguments ?? ""),
+          });
+        }
+      }
+    }
+
+    const toolCalls = [...calls.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, call]) => ({ id: call.id, name: call.name, args: parseArgs(call.args) }));
+
+    return {
+      text,
+      toolCalls,
+      ...(usage?.prompt_tokens !== undefined && usage.completion_tokens !== undefined
+        ? { usage: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens } }
         : {}),
     };
   }
