@@ -94,6 +94,11 @@
         border-radius: 10px; padding: 10px 12px; font-size: 13px;
       }
       .approval-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .approval-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        padding: 6px 0; border-bottom: 1px solid #3a2c0d;
+      }
+      .approval-row .approval-actions { margin-top: 0; }
       .btn {
         all: unset; cursor: pointer; padding: 6px 14px; border-radius: 8px;
         border: 1px solid var(--line); background: #0e1620; font-size: 13px;
@@ -102,6 +107,7 @@
       .btn:disabled { opacity: .45; cursor: default; }
       .btn.ok { border-color: #2a5a44; color: var(--ok); }
       .btn.bad { border-color: #5a2a2a; color: var(--bad); }
+      .btn.active { background: #16283a; border-color: var(--accent); }
       .bubble .live { min-height: 1em; }
       .bubble .live::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
       @keyframes blink { 50% { opacity: 0; } }

@@ -10,5 +10,5 @@ const { contextBridge, ipcRenderer } = require("electron");
  */
 contextBridge.exposeInMainWorld("agentdeskShell", {
   info: () => ipcRenderer.invoke("shell:info"),
-  resolveApproval: (decision) => ipcRenderer.invoke("shell:resolve-approval", decision),
+  resolveApproval: (decisions) => ipcRenderer.invoke("shell:resolve-approval", decisions),
 });

@@ -108,11 +108,11 @@ async function boot() {
   // The renderer cannot call the host's HTTP API with a token it does not know
   // (host runs --no-auth here), so approval resolution goes through the main
   // process. This is the native surface: two methods, both explicit.
-  ipcMain.handle("shell:resolve-approval", async (_event, decision) => {
+  ipcMain.handle("shell:resolve-approval", async (_event, decisions) => {
     const response = await fetch(`${hostUrl}/api/rpc`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ method: "turn.resolve", params: { decision } }),
+      body: JSON.stringify({ method: "turn.resolve", params: { decisions } }),
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error ?? "resolve failed");

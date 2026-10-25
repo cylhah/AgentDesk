@@ -213,6 +213,9 @@ function buildHandlers(
       lastSeq: broker.lastSeq,
       store: store.describe(),
       currentThreadId: currentThreadId ?? null,
+      /** First-run hint: without a key, `--run` fails before any turn starts. */
+      providerConfigured:
+        (process.env.OPENAI_API_KEY ?? process.env.DEEPSEEK_API_KEY) !== undefined,
     }),
 
     "session.list": async () => await store.list(),
@@ -238,8 +241,9 @@ function buildHandlers(
     },
 
     // Present only when the host was started with `--run`. The view can resolve
-    // a parked call; it still cannot submit a task.
-    "turn.state": async () => runner?.state() ?? { threadId: null, pending: null, reason: null },
+    // a parked batch; it still cannot submit a task.
+    "turn.state": async () =>
+      runner?.state() ?? { threadId: null, pending: [], reason: null },
 
     /** Recorded eval runs: the dashboard's "three tables" (pass rate / cost / latency). */
     "eval.history": async (params) => {
@@ -250,11 +254,24 @@ function buildHandlers(
 
     "turn.resolve": async (params) => {
       if (runner === undefined) throw new Error("host was started without --run");
-      const decision = (params as { decision?: string } | undefined)?.decision;
-      if (decision !== "approve" && decision !== "deny") {
-        throw new Error('decision must be "approve" or "deny"');
+      const decisions = (params as { decisions?: unknown } | undefined)?.decisions;
+      if (!Array.isArray(decisions) || decisions.length === 0) {
+        throw new Error("decisions required: [{ callId, decision }]");
       }
-      return await runner.resolve(decision);
+      const parsed = decisions.map((entry) => {
+        const candidate = entry as { callId?: unknown; decision?: unknown };
+        if (
+          typeof candidate.callId !== "string" ||
+          (candidate.decision !== "approve" && candidate.decision !== "deny")
+        ) {
+          throw new Error('each decision needs { callId, decision: "approve" | "deny" }');
+        }
+        return {
+          callId: candidate.callId,
+          decision: candidate.decision as "approve" | "deny",
+        };
+      });
+      return await runner.resolve(parsed);
     },
   };
 }

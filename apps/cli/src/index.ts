@@ -242,7 +242,7 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
 
   const call = async (
     messages: readonly Message[],
-    resume?: { callId: string; decision: "approve" | "deny" },
+    decisions?: readonly { callId: string; decision: "approve" | "deny" }[],
   ): Promise<RunTurnResult> =>
     await runTurn({
       threadId: host.threadId,
@@ -253,10 +253,10 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
       system: host.system,
       cwd: host.cwd,
       // No approval callback on purpose: the turn parks at `awaiting_approval`
-      // and `decidePending` resumes it with the exact callId. That keeps the
-      // recorded history valid (a parked call gets a result, not an orphan) and
-      // mirrors how a UI host will work — ask later, resume the same turn.
-      ...(resume !== undefined ? { resume } : {}),
+      // and `decidePending` resumes it with the exact callIds. That keeps the
+      // recorded history valid (parked calls get results, not orphans) and
+      // mirrors how a UI host works — ask later, resume the same turn.
+      ...(decisions !== undefined ? { resume: { decisions } } : {}),
       ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
       ...(options.summarize === true
         ? {
@@ -274,20 +274,25 @@ async function runOneTurn(host: Host, task: string, options: TurnOptions): Promi
   // A resumed turn is a *continuation*: sum the segments so the recorded cost
   // reflects every request the turn actually made.
   let usage = result.usage;
-  while (result.reason === "awaiting_approval" && result.pendingApproval !== undefined) {
-    const pending = result.pendingApproval;
-    const decision = await decidePending(pending, options.autoApprove);
-    await auditLog.record({
-      threadId: host.threadId,
-      turnId,
-      kind: "approval",
-      cwd: host.cwd,
-      tool: pending.tool.name,
-      risk: pending.tool.risk,
-      decision: decision === "approve" ? "approved" : "denied",
-      args: summarizeArgs(pending.args),
-    });
-    result = await call(result.messages, { callId: pending.callId, decision });
+  while (result.reason === "awaiting_approval" && (result.pendingApprovals?.length ?? 0) > 0) {
+    const decisions: { callId: string; decision: "approve" | "deny" }[] = [];
+
+    for (const pending of result.pendingApprovals ?? []) {
+      const decision = await decidePending(pending, options.autoApprove);
+      decisions.push({ callId: pending.callId, decision });
+      await auditLog.record({
+        threadId: host.threadId,
+        turnId,
+        kind: "approval",
+        cwd: host.cwd,
+        tool: pending.tool.name,
+        risk: pending.tool.risk,
+        decision: decision === "approve" ? "approved" : "denied",
+        args: summarizeArgs(pending.args),
+      });
+    }
+
+    result = await call(result.messages, decisions);
     usage = {
       inputTokens: usage.inputTokens + result.usage.inputTokens,
       outputTokens: usage.outputTokens + result.usage.outputTokens,
@@ -408,11 +413,8 @@ async function runLive(
   const result = await runOneTurn(host, task, options);
 
   if (result.reason === "awaiting_approval") {
-    console.log(
-      yellow(
-        `\nstopped for approval: ${result.pendingApproval?.tool.name ?? "?"} — re-run with --yes to allow`,
-      ),
-    );
+    const names = (result.pendingApprovals ?? []).map((entry) => entry.tool.name).join(", ") || "?";
+    console.log(yellow(`\nstopped for approval: ${names} — re-run with --yes to allow`));
   }
   reportSession(host);
 }

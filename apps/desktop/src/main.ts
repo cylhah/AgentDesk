@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AgentEventSchema, type AgentEvent } from "@agentdesk/protocol";
 import { EventBroker } from "@agentdesk/eventstream";
-import { JsonlSessionStore, SqliteSessionStore } from "@agentdesk/store";
+import { AuditLog, JsonlSessionStore, SqliteSessionStore } from "@agentdesk/store";
 import { resolveScenario } from "@agentdesk/tools";
 import { startHostServer } from "./server";
 import { TurnRunner } from "./turn";
@@ -102,6 +102,33 @@ async function loadTrace(replay: string): Promise<AgentEvent[]> {
   throw new Error(`cannot find trace: ${replay}`);
 }
 
+/**
+ * Minimal `.env` support for the portable build: the packaged app has no shell
+ * to export variables into, so a `.env` next to the executable is the first-run
+ * path. Existing environment always wins — never overwrite a real key with a
+ * stale file.
+ */
+async function loadDotEnv(): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(resolve(process.cwd(), ".env"), "utf8");
+  } catch {
+    return;
+  }
+
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+    if (key.length > 0 && process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+await loadDotEnv();
+
 const args = parseArgs(process.argv.slice(2));
 const store =
   args.store === "sqlite"
@@ -119,6 +146,7 @@ const runner =
         scenario,
         cwd: process.cwd(),
         summarize: true,
+        audit: new AuditLog(resolve("runs/audit.ndjson")),
       })
     : undefined;
 
@@ -155,8 +183,9 @@ if (args.run !== undefined) {
   runner
     ?.start(args.run)
     .then((state) => {
-      if (state.pending !== null) {
-        console.log(`parked for approval: ${state.pending.name} — approve it in the dashboard`);
+      if (state.pending.length > 0) {
+        const names = state.pending.map((entry) => entry.name).join(", ");
+        console.log(`parked for approval: ${names} — approve them in the dashboard`);
       } else {
         console.log(`turn finished: ${state.reason ?? "unknown"}`);
       }

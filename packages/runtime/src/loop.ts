@@ -54,14 +54,15 @@ export interface RunTurnInput {
   /**
    * Continue a turn that stopped at `awaiting_approval`.
    *
-   * Without this the host had to re-run the turn from scratch, which either
-   * replayed side effects or lost the pending call. The decision settles the
-   * exact `callId` that was parked: approve runs the tool now, deny feeds an
-   * error back to the model like any other tool failure.
+   * A step can park several confirm calls at once; `decisions` settles them in
+   * one resume instead of one round-trip per call. Every decision is applied in
+   * order, then the loop continues.
    */
   readonly resume?: {
-    readonly callId: string;
-    readonly decision: "approve" | "deny";
+    readonly decisions: readonly {
+      readonly callId: string;
+      readonly decision: "approve" | "deny";
+    }[];
   };
   readonly approval?: ApprovalFn;
   readonly onEvent?: (event: AgentEvent) => void;
@@ -81,7 +82,8 @@ export interface RunTurnResult {
   readonly reason: TurnEndReason;
   readonly messages: readonly Message[];
   readonly usage: TokenUsage;
-  readonly pendingApproval?: ApprovalRequest;
+  /** Every call parked by the last step, in the order the model asked for them. */
+  readonly pendingApprovals?: readonly ApprovalRequest[];
   /** New or refreshed summary of the head of the conversation — persist it, or pay again next turn. */
   readonly summary?: { readonly text: string; readonly frontier: number };
 }
@@ -111,7 +113,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   let steps = 0;
   let usedEstimate = false;
   let reason: TurnEndReason = "max_steps";
-  let pendingApproval: ApprovalRequest | undefined;
+  const pendingApprovals: ApprovalRequest[] = [];
   /** Summarised head of the conversation; reused from the previous turn when available. */
   let summary: { text: string; frontier: number } | undefined =
     input.priorSummary !== undefined && input.priorSummary.frontier <= messages.length
@@ -127,49 +129,53 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   // The assistant message holding the tool call is already in `messages`,
   // so executing here continues the same turn instead of replaying it.
   if (input.resume !== undefined) {
-    const { callId, decision } = input.resume;
-    let pendingCall: { name: string; args: unknown } | undefined;
-    for (let index = messages.length - 1; index >= 0 && pendingCall === undefined; index -= 1) {
-      const message = messages[index];
-      const call = message?.toolCalls?.find((candidate) => candidate.id === callId);
-      if (call !== undefined) pendingCall = { name: call.name, args: call.args };
-    }
+    // Settle every decision at once: a step can park several confirm calls, and
+    // the host resolves them as a batch instead of one round-trip per call.
+    for (const { callId, decision } of input.resume.decisions) {
+      let pendingCall: { name: string; args: unknown } | undefined;
+      for (let index = messages.length - 1; index >= 0 && pendingCall === undefined; index -= 1) {
+        const message = messages[index];
+        const call = message?.toolCalls?.find((candidate) => candidate.id === callId);
+        if (call !== undefined) pendingCall = { name: call.name, args: call.args };
+      }
 
-    if (pendingCall === undefined) {
-      reason = "error";
+      if (pendingCall === undefined) {
+        reason = "error";
+        emit({
+          type: "error",
+          turnId,
+          message: `cannot resume: no pending tool call ${callId}`,
+          recoverable: false,
+          ts: now(),
+        });
+        emit({ type: "turn.end", turnId, reason, ts: now() });
+        return {
+          turnId,
+          reason,
+          messages,
+          usage: { inputTokens, outputTokens, steps },
+        };
+      }
+
+      const tool = input.tools.find((candidate) => candidate.name === pendingCall?.name);
       emit({
-        type: "error",
+        type: "tool.approval_resolved",
         turnId,
-        message: `cannot resume: no pending tool call ${callId}`,
-        recoverable: false,
+        callId,
+        name: pendingCall.name,
+        decision,
         ts: now(),
       });
-      emit({ type: "turn.end", turnId, reason, ts: now() });
-      return {
-        turnId,
-        reason,
-        messages,
-        usage: { inputTokens, outputTokens, steps },
-      };
-    }
 
-    const tool = input.tools.find((candidate) => candidate.name === pendingCall?.name);
-    emit({
-      type: "tool.approval_resolved",
-      turnId,
-      callId,
-      name: pendingCall.name,
-      decision,
-      ts: now(),
-    });
+      if (decision === "deny" || tool === undefined) {
+        messages.push({
+          role: "tool",
+          toolCallId: callId,
+          content: `ERROR user denied ${pendingCall.name} — do not retry, explain what you cannot do`,
+        });
+        continue;
+      }
 
-    if (decision === "deny" || tool === undefined) {
-      messages.push({
-        role: "tool",
-        toolCallId: callId,
-        content: `ERROR user denied ${pendingCall.name} — do not retry, explain what you cannot do`,
-      });
-    } else {
       emit({
         type: "tool.call",
         turnId,
@@ -330,7 +336,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       toolCalls: turn.toolCalls,
     });
 
-    for (const call of turn.toolCalls) {
+    for (let index = 0; index < turn.toolCalls.length; index += 1) {
+      const call = turn.toolCalls[index];
+      if (call === undefined) continue;
       const tool = input.tools.find((candidate) => candidate.name === call.name);
 
       if (tool === undefined) {
@@ -392,16 +400,32 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         // later resumes the turn. A callback that returns false is a *decision*
         // (denied), which the model must see and react to like any other error.
         if (input.approval === undefined) {
-          emit({
-            type: "tool.approval_required",
-            turnId,
-            callId: call.id,
-            name: tool.name,
-            args: parsed.data,
-            risk: tool.risk,
-            ts: now(),
-          });
-          pendingApproval = { tool, args: parsed.data, callId: call.id };
+          // Park this call and every later confirm call in the same step. The
+          // ones in between are not executed: ordering matters, and a safe call
+          // after a dangerous one may depend on its result.
+          for (let rest = index; rest < turn.toolCalls.length; rest += 1) {
+            const parked = turn.toolCalls[rest];
+            if (parked === undefined) continue;
+            const parkedTool = input.tools.find((candidate) => candidate.name === parked.name);
+            if (parkedTool === undefined || parkedTool.risk !== "confirm") continue;
+            const parsedParked = parkedTool.parameters.safeParse(parked.args);
+            if (!parsedParked.success) continue;
+
+            emit({
+              type: "tool.approval_required",
+              turnId,
+              callId: parked.id,
+              name: parkedTool.name,
+              args: parsedParked.data,
+              risk: parkedTool.risk,
+              ts: now(),
+            });
+            pendingApprovals.push({
+              tool: parkedTool,
+              args: parsedParked.data,
+              callId: parked.id,
+            });
+          }
           reason = "awaiting_approval";
           break outer;
         }
@@ -479,7 +503,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     reason,
     messages,
     usage: { inputTokens, outputTokens, steps },
-    ...(pendingApproval !== undefined ? { pendingApproval } : {}),
+    ...(pendingApprovals.length > 0 ? { pendingApprovals } : {}),
     ...(summary !== undefined ? { summary } : {}),
   };
 }

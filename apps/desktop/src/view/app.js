@@ -126,11 +126,17 @@ function renderEvent(event) {
       break;
     }
     case "tool.approval_required": {
-      showApproval(event.name, event.args);
+      pendingApprovals.set(event.callId, {
+        name: event.name,
+        args: event.args,
+        choice: "approve",
+      });
+      renderApprovalPanel();
       break;
     }
     case "tool.approval_resolved": {
-      document.getElementById("approval")?.remove();
+      pendingApprovals.delete(event.callId);
+      renderApprovalPanel();
       append(
         el(
           "div",
@@ -172,39 +178,62 @@ function renderEvent(event) {
   }
 }
 
-/** The only write-ish action the view has: settle a call the host parked. */
-function showApproval(name, args) {
+/**
+ * Pending confirm calls. A single step can park several (the loop stops before
+ * executing any of them), so the panel is a small queue: every row defaults to
+ * approve, and one submit sends the whole batch — the host rejects partial
+ * batches because unresolved calls would stay in the history without results.
+ */
+const pendingApprovals = new Map();
+
+function renderApprovalPanel() {
   document.getElementById("approval")?.remove();
+  if (pendingApprovals.size === 0) return;
 
   const panel = el("div", "approval");
   panel.id = "approval";
   panel.append(
-    el("div", null, `⏸ 需要确认：${name} ${short(args)}`),
+    el("div", null, `⏸ 待确认 ${pendingApprovals.size} 项`),
     el("div", "note", "批准后宿主会原地继续这个 turn（不是重跑）"),
   );
 
-  const buttons = el("div", "approval-actions");
-  for (const [label, decision, cls] of [
-    ["批准", "approve", "ok"],
-    ["拒绝", "deny", "bad"],
-  ]) {
-    const button = el("button", `btn ${cls}`, label);
-    button.onclick = async () => {
-      panel.querySelectorAll("button").forEach((node) => {
-        node.disabled = true;
-      });
-      try {
-        // In the shell the preload is the privileged path; in a browser it is RPC.
-        if (shell) await shell.resolveApproval(decision);
-        else await rpc("turn.resolve", { decision });
-      } catch (error) {
-        append(el("div", "note bad", `resolve 失败：${error.message}`));
-        panel.remove();
-      }
-    };
-    buttons.append(button);
+  for (const [callId, entry] of pendingApprovals) {
+    const row = el("div", "approval-row");
+    row.append(el("span", "tag", entry.name), el("span", "args", short(entry.args, 80)));
+
+    const buttons = el("div", "approval-actions");
+    for (const [label, decision, cls] of [
+      ["批准", "approve", "ok"],
+      ["拒绝", "deny", "bad"],
+    ]) {
+      const button = el("button", `btn ${cls} ${entry.choice === decision ? "active" : ""}`, label);
+      button.onclick = () => {
+        entry.choice = decision;
+        renderApprovalPanel();
+      };
+      buttons.append(button);
+    }
+    row.append(buttons);
+    panel.append(row);
   }
-  panel.append(buttons);
+
+  const submit = el("button", "btn", `提交 ${pendingApprovals.size} 项决定`);
+  submit.onclick = async () => {
+    submit.disabled = true;
+    const decisions = [...pendingApprovals.entries()].map(([callId, entry]) => ({
+      callId,
+      decision: entry.choice,
+    }));
+    try {
+      // In the shell the preload is the privileged path; in a browser it is RPC.
+      if (shell) await shell.resolveApproval(decisions);
+      else await rpc("turn.resolve", { decisions });
+    } catch (error) {
+      append(el("div", "note bad", `resolve 失败：${error.message}`));
+      submit.disabled = false;
+    }
+  };
+  panel.append(submit);
   append(panel);
 }
 
@@ -483,10 +512,32 @@ async function bootstrap() {
     }
   }
 
+  // First-run hint: without a key the host can serve history but cannot run a turn.
+  try {
+    const host = await rpc("host.info");
+    if (host.providerConfigured === false) {
+      const hint = el("div", "approval");
+      hint.append(
+        el("div", null, "未配置模型 key：可以浏览历史与回放，但不能发起新的回合。"),
+        el(
+          "div",
+          "note",
+          "在应用目录建一个 .env，写 OPENAI_API_KEY=sk-…（可选 OPENAI_BASE_URL / OPENAI_MODEL），然后重启。",
+        ),
+      );
+      timeline.prepend(hint);
+    }
+  } catch {
+    // host.info is best-effort
+  }
+
   // The page may open after a turn already parked — show the buttons anyway.
   try {
     const state = await rpc("turn.state");
-    if (state.pending) showApproval(state.pending.name, state.pending.args);
+    for (const entry of state.pending ?? []) {
+      pendingApprovals.set(entry.callId, { name: entry.name, args: entry.args, choice: "approve" });
+    }
+    renderApprovalPanel();
   } catch {
     // host started without --run: nothing to settle
   }

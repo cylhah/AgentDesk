@@ -272,21 +272,52 @@ pnpm dev worktrees           # 列出每个会话的 worktree
 pnpm dev worktrees --gc 7    # 删掉 7 天没动过的（只动 runs/worktrees/ 下的）
 ```
 
-## 待办（Week 9）
+## 审批队列与便携打包
 
-Week 8 已完成：
+**一次步骤里的多个高危调用会一起停下**，不是一条一条来：
 
-- [x] 长历史套件（`--suite long|all`）：seed 历史 + 只在第一轮出现的关键事实
-- [x] 压缩 A/B 有了真差异：硬裁剪 5,131 FAIL / 摘要 7,190 PASS / 基线 11,982 PASS
-- [x] eval 可复现：`OPENAI_TEMPERATURE=0`（同一输入两次 token 完全一致）
-- [x] 看板「度量」加趋势线（tokens、p50）
-- [x] 测试：118 passed
+```
+⏸ 待确认 2 项
+  set_window {"action":"open"}     [批准] [拒绝]
+  set_window {"action":"close"}    [批准] [拒绝]
+  [提交 2 项决定]
+```
 
-Week 9 开始（包装）：
+宿主拒绝「部分提交」——没被决定的调用会以无结果的 tool_call 留在历史里。所以 UI 必须一次给全，
+宿主用一次 `resume { decisions }` 全部结算（同一回合继续，不重跑）。默认每行是「批准」，改哪行点哪行。
 
-- [ ] 多个 pending 审批的队列视图（现在一次只展示一个）
-- [ ] Electron 打包（安装包）+ 首次运行引导
-- [ ] README 演示视频脚本 + 3 篇文章提纲
+**便携打包**：
+
+```bash
+pnpm package      # → dist/AgentDesk/（含 AgentDesk.cmd）
+```
+
+- 目录里是 `electron.exe` + `resources/app/`（打包后的 `host.mjs` 200KB + HMI + preload）。
+- **双击 `AgentDesk.cmd`**，不要双击 `electron.exe`：如果从另一个 Electron 应用启动，会继承
+  `ELECTRON_RUN_AS_NODE=1`，二进制退化成 Node，窗口不出现（这个坑在开发时已经踩过一次）。
+- **首次运行**：在目录里建 `.env`（`OPENAI_API_KEY=…`、可选 `OPENAI_BASE_URL` / `OPENAI_MODEL`）。
+  宿主启动时读取，已有环境变量优先。没配 key 时看板顶部会出现一条黄色提示，历史仍可浏览。
+- **数据在本地**：`runs/` 就在 exe 旁边，整个文件夹拷走即带走会话与审计。
+- 没有安装包、没有代码签名、没有自动更新——这是「能跑」和「能发行」之间的差距。
+
+实测（打包版）：窗口标题 `AgentDesk · 座舱媒体`；`/health` 正常；`host.info` 显示
+`providerConfigured: true`（读到了同目录的 `.env`），`store` 指向 `dist/AgentDesk/runs/sessions`。
+
+## 待办（Week 10）
+
+Week 9 已完成：
+
+- [x] 多 pending 审批队列：一次步骤内全部 park，逐项选择 + 一次提交，宿主拒绝部分提交
+- [x] 看板审批写审计（此前只有 CLI 写，宿主这条路径是漏的）
+- [x] 便携打包 `pnpm package`：bundle 宿主（esbuild）、沙箱窗口、启动脚本、README
+- [x] 首次运行：`.env` 支持 + 缺 key 提示条
+- [x] 测试：119 passed
+
+Week 10 开始：
+
+- [ ] 安装包（NSIS / 代码签名）与自动更新
+- [ ] worktree 与 dist 的清理策略（打包产物会累积）
+- [ ] demo 视频脚本 + 3 篇文章提纲
 - [ ] 简历 bullet 用真实数字回填（成功率 / 成本 / 延迟 / 裁剪对照）
 
 ## 设计文档

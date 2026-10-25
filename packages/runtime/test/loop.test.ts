@@ -40,7 +40,7 @@ describe("runTurn", () => {
     });
 
     expect(result.reason).toBe("awaiting_approval");
-    expect(result.pendingApproval?.tool.name).toBe("set_window");
+    expect(result.pendingApprovals?.[0]?.tool.name).toBe("set_window");
     expect(events.some((event) => event.type === "tool.approval_required")).toBe(true);
     // the tool must NOT have run
     expect(events.some((event) => event.type === "tool.call")).toBe(false);
@@ -101,7 +101,7 @@ describe("runTurn", () => {
 
     // A host that answers "no" is different from a host that cannot ask yet.
     expect(result.reason).toBe("completed");
-    expect(result.pendingApproval).toBeUndefined();
+    expect(result.pendingApprovals).toBeUndefined();
     expect(events.some((event) => event.type === "tool.call")).toBe(false);
     expect(events.some((event) => event.type === "error")).toBe(true);
     expect(
@@ -193,7 +193,7 @@ describe("runTurn", () => {
       messages: first.messages,
       provider: new ScriptedProvider([{ text: "已打开车窗。", toolCalls: [] }]),
       tools,
-      resume: { callId: "c1", decision: "approve" },
+      resume: { decisions: [{ callId: "c1", decision: "approve" }] },
       onEvent: (event) => events.push(event),
     });
 
@@ -224,7 +224,7 @@ describe("runTurn", () => {
       messages: first.messages,
       provider: new ScriptedProvider([{ text: "好的，不打开。", toolCalls: [] }]),
       tools,
-      resume: { callId: "c1", decision: "deny" },
+      resume: { decisions: [{ callId: "c1", decision: "deny" }] },
       onEvent: (event) => events.push(event),
     });
 
@@ -303,12 +303,57 @@ describe("runTurn", () => {
       messages: userSays("hi"),
       provider: new ScriptedProvider([{ text: "x", toolCalls: [] }]),
       tools,
-      resume: { callId: "missing", decision: "approve" },
+      resume: { decisions: [{ callId: "missing", decision: "approve" }] },
       onEvent: (event) => events.push(event),
     });
 
     expect(result.reason).toBe("error");
     expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+
+  it("parks every confirm call of a step and settles them in one resume", async () => {
+    const first = await runTurn({
+      threadId: "thread_1",
+      messages: userSays("开窗再关窗"),
+      provider: new ScriptedProvider([
+        {
+          text: "",
+          toolCalls: [
+            { id: "c1", name: "set_window", args: { action: "open" } },
+            { id: "c2", name: "set_window", args: { action: "close" } },
+          ],
+        },
+      ]),
+      tools,
+    });
+
+    expect(first.reason).toBe("awaiting_approval");
+    expect(first.pendingApprovals?.map((entry) => entry.callId)).toEqual(["c1", "c2"]);
+
+    const events: AgentEvent[] = [];
+    const second = await runTurn({
+      threadId: "thread_1",
+      turnId: first.turnId,
+      messages: first.messages,
+      provider: new ScriptedProvider([{ text: "好的。", toolCalls: [] }]),
+      tools,
+      resume: {
+        decisions: [
+          { callId: "c1", decision: "approve" },
+          { callId: "c2", decision: "deny" },
+        ],
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(second.reason).toBe("completed");
+    // Only the approved call ran; the denied one left an error for the model.
+    expect(
+      events.filter((event) => event.type === "tool.call").map((event) => (event.type === "tool.call" ? event.callId : "")),
+    ).toEqual(["c1"]);
+    expect(
+      second.messages.some((message) => message.role === "tool" && message.content.includes("denied")),
+    ).toBe(true);
   });
 
   it("stops at maxSteps when the model never stops calling tools", async () => {
