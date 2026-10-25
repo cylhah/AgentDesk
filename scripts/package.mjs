@@ -31,6 +31,18 @@ if (!(await exists(electronDist))) {
   process.exit(1);
 }
 
+// Rebuilding must not delete a user's conversations. The portable layout keeps
+// `runs/` and `.env` next to the executable, which is exactly where the build
+// output lives — so stash them across the clean and put them back.
+console.log("preserving runs/ and .env …");
+const stash = join(repo, "dist", ".stash");
+await rm(stash, { recursive: true, force: true });
+await mkdir(stash, { recursive: true });
+for (const name of ["runs", ".env"]) {
+  const from = join(out, name);
+  if (await exists(from)) await cp(from, join(stash, name), { recursive: true });
+}
+
 console.log("cleaning dist/AgentDesk …");
 await rm(out, { recursive: true, force: true });
 await mkdir(appDir, { recursive: true });
@@ -104,6 +116,13 @@ await writeFile(
   ].join("\r\n"),
   "utf8",
 );
+
+// Put the user's data back exactly where the portable build expects it.
+for (const name of ["runs", ".env"]) {
+  const from = join(stash, name);
+  if (await exists(from)) await cp(from, join(out, name), { recursive: true });
+}
+await rm(stash, { recursive: true, force: true });
 
 const exe = join(out, "electron.exe");
 if (await exists(exe)) {

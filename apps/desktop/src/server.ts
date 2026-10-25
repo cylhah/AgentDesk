@@ -273,6 +273,10 @@ function buildHandlers(
     "turn.state": async () =>
       peekRunner()?.state() ?? { threadId: null, pending: [], reason: null },
 
+    /** Ends the current conversation; the next `turn.start` opens a new thread. */
+    "turn.new": async () =>
+      peekRunner()?.newSession() ?? { threadId: null, pending: [], reason: null },
+
     /** Recorded eval runs: the dashboard's "three tables" (pass rate / cost / latency). */
     "eval.history": async (params) => {
       const limit = (params as { limit?: number } | undefined)?.limit ?? 20;

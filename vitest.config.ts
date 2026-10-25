@@ -18,7 +18,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/*/test/**/*.test.ts"],
+    include: ["packages/*/test/**/*.test.ts", "apps/*/test/**/*.test.ts"],
     environment: "node",
     // One fork, one file at a time. On Windows, parallel workers race on Vite's
     // temp SSR cache (EBUSY) and on git worktree locks; the symptom is an

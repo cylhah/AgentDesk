@@ -220,6 +220,7 @@ host（Node；由 Electron 主进程或终端拉起）
 
 1. **发起一轮任务**（仅桌面宿主）：顶部输入框回车，走 `turn.start`。坐在机器前的人就是运维者，
    等同于在终端敲 `pnpm dev run "…"`——视图自己仍然不能调用任何工具。
+   **连续输入会累积在同一个 thread**（「换一首」能接上上文）；要另起会话点「新会话」。
 2. **决定一个已经停下的审批**：`confirm` 工具会让回合停在 `awaiting_approval`，看板出现「批准 / 拒绝」，
    点了走 `turn.resolve`，宿主用 `resume { decisions }` **原地继续同一个 turn**。
 
@@ -305,6 +306,7 @@ pnpm package      # → dist/AgentDesk/（含 AgentDesk.cmd）
 - **首次运行**：在目录里建 `.env`（`OPENAI_API_KEY=…`、可选 `OPENAI_BASE_URL` / `OPENAI_MODEL`）。
   宿主启动时读取，已有环境变量优先。没配 key 时看板顶部会出现一条黄色提示，历史仍可浏览。
 - **数据在本地**：`runs/` 就在 exe 旁边，整个文件夹拷走即带走会话与审计。
+  **重新打包不会清掉它们**（`pnpm package` 会先备份 `runs/` 与 `.env` 再还原）。
 - 没有安装包、没有代码签名、没有自动更新——这是「能跑」和「能发行」之间的差距。
 
 实测（打包版）：窗口标题 `AgentDesk · 座舱媒体`；`/health` 正常；`host.info` 显示

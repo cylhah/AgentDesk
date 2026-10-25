@@ -27,6 +27,7 @@ const metricsToggle = document.getElementById("metrics-toggle");
 const runForm = document.getElementById("run-form");
 const runTask = document.getElementById("run-task");
 const runSubmit = document.getElementById("run-submit");
+const newSession = document.getElementById("new-session");
 
 let lastSeq = 0;
 let tokens = 0;
@@ -174,6 +175,8 @@ function renderEvent(event) {
       const line = el("div", "end");
       line.append(el("span", "tag", "⏹ "), el("span", "reason", event.reason));
       append(line);
+      // A turn just landed in the current thread: refresh turn counts in the sidebar.
+      void loadSessions();
       break;
     }
     default:
@@ -509,6 +512,18 @@ async function submitTask(event) {
   }
 }
 
+/** Consecutive tasks continue the current thread; this is the explicit "start over". */
+async function startNewSession() {
+  if (!window.confirm("开始新的会话？当前对话不会丢，会留在左侧列表里。")) return;
+  try {
+    await rpc("turn.new");
+    timeline.replaceChildren(el("div", "empty", "新会话。输入一个任务开始。"));
+    void loadSessions();
+  } catch (error) {
+    append(el("div", "note bad", `新建会话失败：${error.message}`));
+  }
+}
+
 async function bootstrap() {
   // Inside the shell the host runs local-only with --no-auth, and the preload
   // is the privileged surface. In a browser, a token is required.
@@ -528,6 +543,7 @@ async function bootstrap() {
   void loadSessions();
   metricsToggle?.addEventListener("click", () => void toggleMetrics());
   runForm?.addEventListener("submit", (event) => void submitTask(event));
+  newSession?.addEventListener("click", () => void startNewSession());
 
   if (shell) {
     try {

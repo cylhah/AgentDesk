@@ -64,26 +64,53 @@ export class TurnRunner {
     return { threadId: this.threadId, pending: this.pending, reason: this.reason };
   }
 
+  /**
+   * Runs one more turn. Consecutive tasks stay in the **same thread** — that is
+   * what makes "换一首" work and what keeps the sidebar from turning one
+   * conversation into five. `newSession()` is the explicit way to start over.
+   */
   async start(task: string): Promise<TurnState> {
     if (this.turnId !== null) {
       throw new Error("a turn is already in progress — settle or finish it first");
     }
-    const threadId = newId("thread");
+
     const turnId = newId("turn");
-    this.threadId = threadId;
     this.turnId = turnId;
-    this.persisted = 0;
     this.usage = { inputTokens: 0, outputTokens: 0, steps: 0 };
 
-    this.messages = [{ role: "user", content: task }];
-    await this.options.store.create({
-      threadId,
-      cwd: this.options.cwd,
-      provider: this.provider.id,
-      system: this.options.scenario.systemPrompt,
-    });
+    if (this.threadId === null) {
+      this.threadId = newId("thread");
+      this.messages = [];
+      this.persisted = 0;
+      await this.options.store.create({
+        threadId: this.threadId,
+        cwd: this.options.cwd,
+        provider: this.provider.id,
+        system: this.options.scenario.systemPrompt,
+      });
+    }
+
+    const userMessage: Message = { role: "user", content: task };
+    this.messages = [...this.messages, userMessage];
+    await this.options.store.appendMessage(this.threadId, turnId, userMessage);
+    this.persisted = this.messages.length;
 
     await this.drive();
+    return this.state();
+  }
+
+  /** Forgets the current conversation; the next `start` opens a new thread. */
+  newSession(): TurnState {
+    if (this.turnId !== null) {
+      throw new Error("a turn is in progress — finish it before starting a new session");
+    }
+    this.threadId = null;
+    this.turnId = null;
+    this.messages = [];
+    this.persisted = 0;
+    this.pending = [];
+    this.summary = undefined;
+    this.reason = null;
     return this.state();
   }
 
