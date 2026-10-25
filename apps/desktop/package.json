@@ -1,0 +1,12 @@
+{
+  "name": "@agentdesk/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agentdesk/bridge": "workspace:*",
+    "@agentdesk/eventstream": "workspace:*",
+    "@agentdesk/protocol": "workspace:*",
+    "@agentdesk/store": "workspace:*"
+  }
+}

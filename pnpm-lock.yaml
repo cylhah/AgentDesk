@@ -42,6 +42,23 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
 
+  apps/desktop:
+    dependencies:
+      '@agentdesk/bridge':
+        specifier: workspace:*
+        version: link:../../packages/bridge
+      '@agentdesk/eventstream':
+        specifier: workspace:*
+        version: link:../../packages/eventstream
+      '@agentdesk/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@agentdesk/store':
+        specifier: workspace:*
+        version: link:../../packages/store
+
+  packages/bridge: {}
+
   packages/eval:
     dependencies:
       '@agentdesk/protocol':
@@ -53,6 +70,12 @@ importers:
       '@agentdesk/tools':
         specifier: workspace:*
         version: link:../tools
+
+  packages/eventstream:
+    dependencies:
+      '@agentdesk/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/protocol:
     dependencies:

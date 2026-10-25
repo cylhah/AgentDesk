@@ -13,10 +13,15 @@ export default defineConfig({
       "@agentdesk/eval": resolveFromRoot("./packages/eval/src/index.ts"),
       "@agentdesk/store": resolveFromRoot("./packages/store/src/index.ts"),
       "@agentdesk/workspace": resolveFromRoot("./packages/workspace/src/index.ts"),
+      "@agentdesk/bridge": resolveFromRoot("./packages/bridge/src/index.ts"),
+      "@agentdesk/eventstream": resolveFromRoot("./packages/eventstream/src/index.ts"),
     },
   },
   test: {
     include: ["packages/*/test/**/*.test.ts"],
     environment: "node",
+    // Forked workers keep child-process-heavy tests (git worktrees) from
+    // destabilising the main worker's teardown on Windows.
+    pool: "forks",
   },
 });

@@ -1,4 +1,4 @@
-﻿import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorktree, isGitRepo, removeWorktree } from "@agentdesk/workspace";
@@ -38,7 +38,16 @@ afterEach(async () => {
   } catch {
     // repo may be gone
   }
-  await rm(repo, { recursive: true, force: true });
+  // Windows keeps handles on git's temp files for a moment; retry instead of
+  // failing the suite with an EBUSY that has nothing to do with the assertion.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await rm(repo, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 });
 
 describe("createWorktree", () => {

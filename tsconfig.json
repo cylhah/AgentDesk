@@ -8,13 +8,16 @@
       "@agentdesk/tools": ["packages/tools/src/index.ts"],
       "@agentdesk/eval": ["packages/eval/src/index.ts"],
       "@agentdesk/store": ["packages/store/src/index.ts"],
-      "@agentdesk/workspace": ["packages/workspace/src/index.ts"]
+      "@agentdesk/workspace": ["packages/workspace/src/index.ts"],
+      "@agentdesk/bridge": ["packages/bridge/src/index.ts"],
+      "@agentdesk/eventstream": ["packages/eventstream/src/index.ts"]
     }
   },
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
     "apps/cli/src/**/*.ts",
+    "apps/desktop/src/**/*.ts",
     "vitest.config.ts"
   ]
 }
