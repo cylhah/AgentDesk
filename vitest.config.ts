@@ -20,8 +20,11 @@ export default defineConfig({
   test: {
     include: ["packages/*/test/**/*.test.ts"],
     environment: "node",
-    // Forked workers keep child-process-heavy tests (git worktrees) from
-    // destabilising the main worker's teardown on Windows.
+    // One fork, one file at a time. On Windows, parallel workers race on Vite's
+    // temp SSR cache (EBUSY) and on git worktree locks; the symptom is an
+    // "unhandled error" plus a silently reduced test count, which is worse than
+    // a slower suite. 100 tests still finish in ~3s.
     pool: "forks",
+    poolOptions: { forks: { singleFork: true } },
   },
 });

@@ -15,10 +15,11 @@
 
 ```bash
 pnpm install
+pnpm verify                                # build + 100 tests + eval 5/5 + demo，全离线
 
 pnpm demo                                  # 回放 media-01，打印完整事件流
 pnpm eval                                  # 跑全部 5 条夹具（脚本化模型，离线）
-pnpm test                                  # 76 个单元测试
+pnpm test                                  # 100 个单元测试
 pnpm build                                 # tsc 严格模式类型检查
 
 # 接真实模型（任意 OpenAI 兼容端点）
@@ -30,9 +31,13 @@ pnpm dev run "放周杰伦的晴天"                # 单轮；结束会打印 s
 pnpm dev chat                              # 多轮；每轮自动落盘
 pnpm dev sessions                          # 列出已记录的会话
 pnpm dev items <thread>                    # Thread/Turn/Item 投影
+pnpm dev audit                             # 审计：工具、批准、token
 pnpm dev replay runs/sessions/<id>.events.ndjson    # 回放事件流
 pnpm dev eval --live                       # 用真实模型跑夹具，会花钱
+pnpm ui --replay <thread>                  # 看板 → http://127.0.0.1:4780
+```
 
+**完整的运行与验证清单**（每一层的预期输出、排错表）：[docs/verify.md](./docs/verify.md)
 # 以上都可加 --store sqlite，落 runs/sessions/sessions.db
 ```
 

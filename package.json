@@ -16,6 +16,7 @@
     "demo": "tsx apps/cli/src/index.ts run --mock media-01",
     "eval": "tsx apps/cli/src/index.ts eval",
     "ui": "tsx apps/desktop/src/main.ts",
+    "verify": "pnpm build && pnpm test && pnpm eval && pnpm demo",
     "check": "npm run build && npm run test"
   },
   "devDependencies": {
